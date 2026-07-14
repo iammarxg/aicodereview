@@ -19,10 +19,29 @@ All times are UTC.
 ---
 
 ## B1 — `aicr scan`: full-repository review (not just the diff)
-- **Status:** designed
+- **Status:** in-progress (core + measured estimate shipped; chunking still open)
 - **Suggested (UTC):** 2026-07-14T20:20Z
 - **Suggested at:** v0.3.0 (commit ca2c95a)
-- **Target version:** TBA (leading candidate for the next feature release)
+- **Target version:** next release (Unreleased)
+- **Updated (UTC):** 2026-07-15T22:05Z — `aicr scan` shipped: full-content
+  `DiffFile` synthesis (`scan.py`), shared discovery via `analyze.reviewable_files`,
+  cost/time estimate + confirmation, `--max-files`, `--yes`, `--format json`.
+- **Updated (UTC):** 2026-07-15T22:50Z — fixed the estimate + recommendations that
+  shipped wrong in v0.4.0:
+  * **Measured estimate now built** (the plan's headline item). `aicr scan` reviews
+    one representative-sized file (timed) via `run_review`, then extrapolates:
+    `ceil(files/concurrency) × sample_seconds`. The sample is cached, so the full
+    run reuses it. `aicr init` no longer prints a guessed time — it points to
+    `aicr scan` for a measured one (init makes no API calls).
+  * **Per-file cost model.** `estimate_scan_seconds` now charges per-call overhead
+    per file instead of treating the repo as one token stream, so a many-small-files
+    repo no longer estimates as "~0.0 min".
+  * **Repo-aware excludes.** Recommendations reflect the non-source file types
+    actually present (docs/config/assets + heavy dirs + lockfiles) instead of a
+    static `*.min.js`/`*.min.css` guess; docs/config text no longer inflates the
+    token count. Still open: large-file chunking (below).
+
+
 
 ### Problem
 `aicr review` only looks at the staged/unstaged/range diff. Users want a one-shot

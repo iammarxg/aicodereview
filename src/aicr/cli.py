@@ -16,6 +16,7 @@ import asyncio
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -31,8 +32,8 @@ from aicr.config import (
 )
 from aicr.diff.source import DiffMode, DiffSourceError, LocalGitSource
 from aicr.engine import run_review
-from aicr.models import ReviewResult, Severity
-from aicr.providers.base import ProviderError
+from aicr.models import DiffFile, ReviewResult, Severity
+from aicr.providers.base import LLMProvider, ProviderError
 from aicr.providers.gemini import DEFAULT_GEMINI_MODEL
 from aicr.providers.ollama import DEFAULT_OLLAMA_BASE_URL
 from aicr.providers.registry import build_provider
@@ -266,6 +267,192 @@ def _resolve_config(*, categories: tuple[str, ...], model: str | None) -> Config
     if model:
         config.model = model
     return config
+
+
+def _print_scan_estimate(
+    provider: LLMProvider,
+    files: list[DiffFile],
+    config: Config,
+    *,
+    cache: ReviewCache,
+    debug: bool,
+) -> None:
+    """Time one representative file review and print a measured scan estimate.
+
+    Reviews a single average-sized file through ``run_review`` (timed), which also
+    writes it to ``cache`` — so the full scan below reuses that result instead of
+    paying for it twice. The measured per-file time is extrapolated across the
+    batches into a ``~low–high`` range. If the sample fails, we print a soft note
+    and let the user decide; the scan itself will surface the real error.
+    """
+    from aicr.analyze import estimate_from_sample
+    from aicr.scan import representative_sample
+
+    sample = representative_sample(files)
+    start = time.perf_counter()
+    try:
+        asyncio.run(run_review(provider, [sample], config, cache=cache))
+    except Exception as exc:  # provider/network error — don't block the decision
+        if debug:
+            raise
+        click.echo(f"  (couldn't measure a sample: {exc}; proceeding without an estimate)")
+        return
+    seconds = time.perf_counter() - start
+
+    low, high = estimate_from_sample(
+        file_count=len(files),
+        concurrency=config.concurrency,
+        sample_seconds=seconds,
+    )
+    click.echo(
+        f"Estimated time: ~{low:.0f}–{high:.0f}s "
+        f"(measured from one file at {seconds:.1f}s; varies with model load)."
+    )
+
+
+@cli.command()
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["cli", "json"]),
+    default="cli",
+    help="Output format.",
+)
+@click.option("--no-color", is_flag=True, help="Disable colored output.")
+@click.option(
+    "--category",
+    "categories",
+    multiple=True,
+    type=click.Choice(["bugs", "security", "readability", "style"]),
+    help="Override review categories (repeatable).",
+)
+@click.option("--model", default=None, help="Override the model for this run.")
+@click.option(
+    "--max-files",
+    "max_files",
+
+    type=int,
+    default=None,
+    help="Cap how many files this scan reviews (overrides config for this run).",
+)
+@click.option("--no-cache", is_flag=True, help="Ignore the hunk cache for this run.")
+@click.option("--yes", "assume_yes", is_flag=True, help="Skip the cost confirmation prompt.")
+@click.option("--debug", is_flag=True, help="Show full tracebacks and verbose errors.")
+def scan(
+    output_format: str,
+    no_color: bool,
+    categories: tuple[str, ...],
+    model: str | None,
+    max_files: int | None,
+    no_cache: bool,
+    assume_yes: bool,
+    debug: bool,
+) -> None:
+    """Review the whole repository's existing code (not just a diff).
+
+    Unlike ``review``, this sends full file contents to the provider, so it can
+    find issues in code you didn't just touch. Because that can be a lot of API
+    calls, it prints a size + time estimate and asks for confirmation first
+    (skip with ``--yes``). Use ``--max-files`` to cap the cost.
+    """
+    from aicr.analyze import AnalysisError, analyze_repo
+    from aicr.scan import collect_scan_files
+
+    cwd = Path.cwd()
+
+    try:
+        config = _resolve_config(categories=categories, model=model)
+        if max_files is not None:
+            config.max_files_per_review = max_files
+        analysis = analyze_repo(cwd)
+        files = collect_scan_files(cwd, exclude_paths=config.exclude_paths)
+    except (ConfigError, AnalysisError) as exc:
+        _error(str(exc))
+        raise SystemExit(1) from None
+    except Exception as exc:  # pragma: no cover - unexpected
+        if debug:
+            raise
+        _error(f"unexpected error: {exc}")
+        raise SystemExit(1) from None
+
+    if not files:
+        click.echo("Nothing to scan — no reviewable tracked files found.")
+        raise SystemExit(0)
+
+    # Apply the --max-files / config cap to the actual set we'll review, so the
+    # estimate and the run agree on the same files.
+    if len(files) > config.max_files_per_review:
+        capped_note = (
+            f"Note: capped at {config.max_files_per_review} of {len(files)} files "
+            "(raise with --max-files or max_files_per_review)."
+        )
+        files = files[: config.max_files_per_review]
+    else:
+        capped_note = None
+
+    try:
+        provider = build_provider(config)
+    except ProviderError as exc:
+        _error(f"scan failed ({exc}).")
+        raise SystemExit(1) from None
+
+    cache = ReviewCache(cwd, enabled=config.cache_enabled and not no_cache)
+
+    # Confirmation gate with a *measured* time estimate: review one representative
+    # file first (timed) and extrapolate. This is skipped for --yes (no prompt to
+    # inform) and --format json (must stay a clean pipe). The sample review is
+    # served back from the cache on the full run below, so it isn't wasted.
+    if output_format != "json" and not assume_yes:
+        click.echo(
+            f"About to scan {len(files)} file(s) "
+            f"(~{analysis.estimated_tokens:,} tokens, "
+            f"provider {config.provider}:{config.model})."
+        )
+        if capped_note:
+            click.echo(capped_note)
+        _print_scan_estimate(provider, files, config, cache=cache, debug=debug)
+        if not click.confirm("Proceed with the scan?", default=True):
+            # One sample file may already have been reviewed to measure the
+            # estimate above; the rest of the repo is not sent.
+            click.echo("Aborted — the remaining files were not sent to the provider.")
+            raise SystemExit(0)
+
+
+    progress = _ProgressPrinter() if output_format != "json" else None
+    try:
+        result = asyncio.run(
+            run_review(provider, files, config, cache=cache, progress_callback=progress)
+        )
+
+    except ProviderError as exc:
+        if progress is not None:
+            progress.clear()
+        _error(f"scan failed ({exc}).")
+        raise SystemExit(1) from None
+    except Exception as exc:  # pragma: no cover - unexpected
+        if progress is not None:
+            progress.clear()
+        if debug:
+            raise
+        _error(f"scan failed (unexpected error: {exc}).")
+        raise SystemExit(1) from None
+    finally:
+        if progress is not None:
+            progress.clear()
+
+    if output_format == "json":
+        click.echo(json_renderer.render(result))
+    else:
+        use_color = not no_color and sys.stdout.isatty()
+        click.echo(
+            cli_renderer.render(
+                result,
+                use_color=use_color,
+                display_threshold=config.severity_display_threshold,
+            )
+        )
+    raise SystemExit(0)
+
 
 
 def _do_install(force: bool) -> None:
@@ -512,12 +699,12 @@ def _maybe_analyze_repo(
     """
     click.echo(
         "\nI can analyze this repo to recommend settings that make reviews fast "
-        "and efficient for its size (and estimate a full-repo scan time)."
+        "and efficient for its size."
     )
     if not click.confirm("Analyze the repository now? (fast, no API calls)", default=True):
         return
 
-    from aicr.analyze import AnalysisError, analyze_repo, estimate_scan_seconds
+    from aicr.analyze import AnalysisError, analyze_repo
 
     try:
         analysis = analyze_repo(cwd)
@@ -527,7 +714,7 @@ def _maybe_analyze_repo(
 
     langs = ", ".join(f"{name} ({n})" for name, n in analysis.languages[:6]) or "none detected"
     click.echo(
-        f"\n  {analysis.total_files} files · {analysis.total_lines:,} lines · "
+        f"\n  {analysis.total_files} reviewable files · {analysis.total_lines:,} lines · "
         f"~{analysis.total_chars:,} chars · ~{analysis.estimated_tokens:,} tokens (approx.)"
     )
     click.echo(f"  Languages: {langs}")
@@ -536,20 +723,13 @@ def _maybe_analyze_repo(
         f"  Recommended limits:    max_files={analysis.recommended_max_files}, "
         f"concurrency={analysis.recommended_concurrency}"
     )
-
-    # A rough, clearly-labelled full-scan estimate using a conservative default
-    # throughput (a real timed sample is a future `aicr scan` feature).
-    low, high = estimate_scan_seconds(
-        analysis,
-        tokens_per_second=800.0,  # conservative default; provider/model dependent
-        concurrency=analysis.recommended_concurrency,
-    )
-    click.echo(
-        f"  Full-repo scan estimate: ~{low / 60:.1f}–{high / 60:.1f} min "
-        "(very approximate; depends on your model's speed)."
-    )
+    # No time estimate here on purpose — a trustworthy number needs a real timed
+    # sample against your provider/model, which `aicr scan` does (this step makes
+    # no API calls). So we point there instead of printing a guess.
+    click.echo("  Run `aicr scan` for a full-repo review with a measured time estimate.")
 
     if click.confirm("\nApply these recommended settings to .aicr.yaml?", default=True):
+
         settings["languages"] = ", ".join(analysis.recommended_languages)
         settings["exclude_paths"] = ", ".join(analysis.recommended_excludes)
         settings["max_files_per_review"] = analysis.recommended_max_files

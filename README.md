@@ -43,8 +43,8 @@ API key to a gitignored `.env` (never to `.aicr.yaml`), lets you pick categories
 and blocking behavior, optionally walks you through advanced options, and offers to
 install the pre-commit hook. At the end it can **analyze your repo** (fast, no API
 calls) — reporting file/line/character counts, detected languages, and recommended
-excludes/limits tuned to its size, plus a rough full-repo scan-time estimate — and
-apply those recommendations to `.aicr.yaml`. The generated file always lists every
+excludes/limits tuned to its size — and apply those recommendations to `.aicr.yaml`
+(for a measured full-repo review time, run `aicr scan`). The generated file lists every
 option — the ones you didn't set are written commented-out at their defaults, so
 the whole config surface is discoverable in one place. Prefer to do it by hand? Set
 the provider's key env var, write a `.aicr.yaml`, and run `aicr enable`.
@@ -104,10 +104,12 @@ For Ollama: install it, `ollama pull llama3.1`, then set `provider: ollama` in
 |---|---|
 | `aicr init` | Interactive setup wizard (provider, key, categories, hook). |
 | `aicr review [--unstaged\|--range A..B] [--strict] [--no-cache] [--format cli\|json] [--category ...] [--model ...] [--include ...]` | Review changes. Warn-only (exit 0) unless `--strict`. |
+| `aicr scan [--max-files N] [--yes] [--format cli\|json] [--category ...] [--model ...]` | Review the whole repo's existing code (not just a diff). Shows a cost/time estimate and confirms first. |
 | `aicr enable [--force]` | Install `.git/hooks/pre-commit` in the current repo. |
 | `aicr disable` | Remove the aicr pre-commit hook. |
 | `aicr reset [--yes]` | Remove everything aicr added: hook, `.aicr.yaml`, and the `.aicr/` cache (offers to strip the key from `.env`). |
 | `aicr config` | Show the resolved configuration (never prints the API key). |
+
 
 
 `install-hook` / `uninstall-hook` remain as hidden aliases for `enable` /
@@ -143,11 +145,31 @@ aicr review --include docker-compose.yml
 aicr review --include "docker-compose.yml *.md"
 ```
 
+### Scanning the whole repo
+
+`aicr review` only looks at a diff. To review your **existing** code — for a first
+pass on a repo, or to gauge value before wiring up the hook — use `aicr scan`:
+
+```bash
+aicr scan                 # estimate cost/time, confirm, then review every file
+aicr scan --max-files 20  # cap the run (and the spend)
+aicr scan --yes           # skip the confirmation prompt
+aicr scan --format json   # machine-readable, for CI
+```
+
+It sends full file contents (not just changed lines) to the provider, so it can
+find issues anywhere — not only in code you just touched. Because that can be many
+API calls, it reviews one representative file first to **measure** your provider's
+real speed, prints a size + time estimate from that, and asks before scanning the
+rest (the sample is cached, so it isn't reviewed twice).
+
+
 ## Configuration — `.aicr.yaml`
 
 Committable, human-editable, per-repo settings. The API key is **never** stored
 here — only read from the provider's key env var (e.g. `OPENROUTER_API_KEY` or
 `GEMINI_API_KEY`), from your environment or `.env`.
+
 
 ```yaml
 provider: openrouter          # or: gemini, ollama

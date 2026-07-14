@@ -6,7 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`aicr scan`** — review the whole repository's existing code, not just a diff.
+  It synthesizes a full-content "diff" per tracked, reviewable file and runs the
+  same engine/provider/renderer pipeline, so it finds issues in code you didn't
+  just touch. Guarded by a **measured** cost/time estimate + confirmation prompt
+  (skip with `--yes`), with `--max-files` to cap spend and `--format json` for CI.
+  Reuses `analyze.py` for discovery so it reviews exactly what the analysis reports.
+
+### Fixed
+- **`aicr init` repo analysis gave wrong excludes and a nonsensical time
+  estimate.** Three fixes:
+  - The scan-time estimate now models the **one-API-call-per-file** cost (fixed
+    per-call overhead + tokens), instead of treating the repo as a single token
+    stream — so a many-small-files repo no longer estimates as "~0.0 min".
+  - `aicr scan` now shows a **measured** estimate: it times one representative-sized
+    file review and extrapolates (the sample is cached and reused by the full run).
+    `aicr init` no longer prints a guessed time — it points you to `aicr scan` for a
+    real one, since `init` makes no API calls.
+  - Exclude recommendations are now **repo-aware**: they reflect the non-source
+    file types actually present (docs/config/assets, heavy dirs, lockfiles) instead
+    of a static `*.min.js`/`*.min.css` guess. Docs/config text (`.md`, `.yaml`, …)
+    is no longer counted as reviewable code, so the token estimate isn't inflated.
+
+
 ## [0.4.0] — 2026-07-15
+
 
 ### Added
 

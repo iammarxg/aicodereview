@@ -11,6 +11,7 @@ from aicr.analyze import (
     AnalysisError,
     RepoAnalysis,
     analyze_repo,
+    estimate_from_sample,
     estimate_scan_seconds,
 )
 
@@ -66,10 +67,60 @@ def test_estimated_tokens_from_chars() -> None:
     assert analysis.estimated_tokens == 1000
 
 
+def test_analyze_recommends_excluding_present_non_source_types(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _add(tmp_path, "app.py", "x = 1\n")
+    _add(tmp_path, "README.md", "# docs\n")
+    _add(tmp_path, "config.yaml", "a: 1\n")
+    _add(tmp_path, "notes.txt", "hello\n")
+
+    analysis = analyze_repo(tmp_path)
+    # Only the Python file is reviewable; docs/config are excluded from counts.
+    assert analysis.total_files == 1
+    excludes = analysis.recommended_excludes
+    # Recommends excluding the non-source types that are actually present…
+    assert "*.md" in excludes
+    assert "*.yaml" in excludes
+    assert "*.txt" in excludes
+    # …but not types the repo doesn't have (no static, repo-blind guesses).
+    assert "*.min.js" not in excludes
+    assert "*.min.css" not in excludes
+
+
 def test_estimate_scan_seconds_scales_with_concurrency() -> None:
-    analysis = RepoAnalysis(total_chars=40000)  # ~10k tokens
+    analysis = RepoAnalysis(total_chars=40000, total_files=40)  # ~10k tokens
     low1, high1 = estimate_scan_seconds(analysis, tokens_per_second=1000, concurrency=1)
     low4, high4 = estimate_scan_seconds(analysis, tokens_per_second=1000, concurrency=4)
     # More concurrency → shorter estimate; range is ordered.
     assert low1 < high1
     assert high4 < high1
+
+
+def test_estimate_scan_seconds_scales_with_file_count() -> None:
+    # A per-file model must charge per-call overhead: more files → more time,
+    # never collapsing to ~0 for a small-but-many-files repo (the old bug).
+    small = RepoAnalysis(total_chars=4000, total_files=2)
+    large = RepoAnalysis(total_chars=4000, total_files=40)
+    _, small_high = estimate_scan_seconds(small, tokens_per_second=800, concurrency=5)
+    _, large_high = estimate_scan_seconds(large, tokens_per_second=800, concurrency=5)
+    assert large_high > small_high
+    # Even a tiny repo takes at least a per-call round-trip's worth of time.
+    assert small_high > 0.0
+
+
+def test_estimate_scan_seconds_zero_files_is_zero() -> None:
+    analysis = RepoAnalysis(total_chars=0, total_files=0)
+    assert estimate_scan_seconds(analysis, tokens_per_second=800, concurrency=5) == (0.0, 0.0)
+
+
+def test_estimate_from_sample_extrapolates() -> None:
+    # 10 files at concurrency 5 = 2 batches; ~3s/file → ~6s point, ±40%.
+    low, high = estimate_from_sample(file_count=10, concurrency=5, sample_seconds=3.0)
+    assert low < high
+    assert low == pytest.approx(6.0 * 0.6)
+    assert high == pytest.approx(6.0 * 1.4)
+
+
+def test_estimate_from_sample_zero_files() -> None:
+    assert estimate_from_sample(file_count=0, concurrency=5, sample_seconds=3.0) == (0.0, 0.0)
+

@@ -103,15 +103,23 @@ Because these are the only things crossing stage boundaries, each stage is unit
 tested in isolation (see `tests/`), and a `FakeProvider` exercises the whole
 pipeline without any network calls.
 
-## Repo analysis (`analyze.py`)
+## Repo analysis (`analyze.py`) and full-repo scan (`scan.py`)
 
-`analyze_repo()` is a standalone, no-LLM pass used by `aicr init` to characterize a
-repository: it walks git-tracked files, filters binary/heavy directories, and
-counts files, lines, and characters, detecting languages by extension. From those
-counts it recommends excludes and limits and estimates a full-repo review time via
-`estimate_scan_seconds()` (tokens ≈ chars/4, divided by throughput × concurrency).
-It's deliberately decoupled from the review pipeline — a future `aicr scan` (see
-BACKLOG.md) will reuse it for file discovery and the cost estimate.
+`analyze_repo()` is a standalone, no-LLM pass used by `aicr init` and `aicr scan` to
+characterize a repository: it walks git-tracked files, filters binary/heavy
+directories, and counts files, lines, and characters, detecting languages by
+extension. From those counts it recommends excludes and limits and estimates a
+full-repo review time via `estimate_scan_seconds()` (tokens ≈ chars/4, divided by
+throughput × concurrency). `reviewable_files()` exposes the same discovery +
+filtering so the two callers agree on exactly which files are in scope.
+
+`scan.py` powers `aicr scan`: it loads each reviewable file's full text and
+synthesizes a `DiffFile` whose lines are *all* marked "added". That's the whole
+trick — the file then flows through the unchanged engine → provider → renderer
+pipeline (including the "only comment on changed lines" safety net in
+`parse_comments`), so reviewing existing code reuses everything review already does.
+The CLI gates it behind a size/time estimate + confirmation and a `--max-files` cap.
+
 
 
 ## Error isolation

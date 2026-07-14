@@ -14,13 +14,27 @@ deliberately approximate and labelled as such wherever it's shown.
 
 from __future__ import annotations
 
+import math
 import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
 
 # Roughly how many characters map to one LLM token (OpenAI/Gemini-ish average).
 CHARS_PER_TOKEN = 4
+
+# Per-file API-call overhead, in seconds: connection + prompt processing + output
+# generation latency that doesn't scale with input size. A scan makes one call
+# per file, so this fixed cost dominates for small files and must not be ignored
+# (ignoring it is what produced the bogus "~0.0 min" estimate). Deliberately
+# conservative; the measured estimate in ``aicr scan`` refines it from a real call.
+_PER_CALL_OVERHEAD_SECONDS = 2.5
+
+# Fallback throughput (tokens/sec) for the *un-measured* estimate shown in
+# ``aicr init``. ``aicr scan`` measures the real value from one sample call.
+DEFAULT_TOKENS_PER_SECOND = 800.0
+
 
 # Extension → human language label, for the "languages" recommendation and
 # report. Only the common ones; unknown extensions are simply ignored.
@@ -63,8 +77,6 @@ _HEAVY_DIR_CANDIDATES: tuple[str, ...] = (
     "out",
     "coverage",
 )
-_LOCKFILE_GLOBS: tuple[str, ...] = ("*.lock", "*.min.js", "*.min.css")
-
 # Binary/asset extensions we skip when counting reviewable code.
 _SKIP_EXT: frozenset[str] = frozenset(
     {
@@ -74,6 +86,25 @@ _SKIP_EXT: frozenset[str] = frozenset(
         ".lock",
     }
 )
+
+# Non-source *text* files: excluded from review by default and not counted as
+# reviewable code (they'd otherwise inflate the token estimate). Maps a file
+# extension to the glob we recommend in .aicr.yaml when the type is present.
+_NON_SOURCE_EXT_GLOB: dict[str, str] = {
+    ".md": "*.md",
+    ".markdown": "*.markdown",
+    ".rst": "*.rst",
+    ".txt": "*.txt",
+    ".yaml": "*.yaml",
+    ".yml": "*.yml",
+    ".toml": "*.toml",
+    ".ini": "*.ini",
+    ".cfg": "*.cfg",
+    ".json": "*.json",
+    ".xml": "*.xml",
+    ".csv": "*.csv",
+}
+
 
 
 @dataclass
@@ -114,12 +145,46 @@ def _tracked_files(repo_dir: Path) -> list[str]:
     return [line for line in out.splitlines() if line.strip()]
 
 
+def detect_language(rel_path: str) -> str | None:
+    """Return the language label for a path's extension, or None if unknown."""
+    return _EXT_LANG.get(Path(rel_path).suffix.lower())
+
+
 def _is_reviewable(rel_path: str) -> bool:
-    """Skip obvious non-source: heavy dirs and binary/asset extensions."""
+    """Skip non-source by default: heavy dirs, binary/assets, and non-source text.
+
+    Documentation and config files (``.md``, ``.yaml``, ``.json`, …) are treated
+    as non-source here so they neither inflate the token estimate nor get scanned
+    by default — matching the excludes we recommend for them.
+    """
     parts = set(Path(rel_path).parts)
     if parts & set(_HEAVY_DIR_CANDIDATES):
         return False
-    return Path(rel_path).suffix.lower() not in _SKIP_EXT
+    ext = Path(rel_path).suffix.lower()
+    return ext not in _SKIP_EXT and ext not in _NON_SOURCE_EXT_GLOB
+
+
+
+def reviewable_files(repo_dir: Path, exclude_paths: list[str] | None = None) -> list[str]:
+    """Return git-tracked, reviewable file paths (relative), honoring excludes.
+
+    Shares the discovery + binary/heavy-dir filtering used by ``analyze_repo`` so
+    ``aicr scan`` reviews exactly the set the analysis reported. ``exclude_paths``
+    globs (from ``.aicr.yaml``) are applied on top, matched against the full
+    relative path and its basename.
+    """
+    excludes = exclude_paths or []
+
+    result: list[str] = []
+    for rel in _tracked_files(repo_dir):
+        if not _is_reviewable(rel):
+            continue
+        name = Path(rel).name
+        if any(fnmatch(rel, pat) or fnmatch(name, pat) for pat in excludes):
+            continue
+        result.append(rel)
+    return result
+
 
 
 def analyze_repo(repo_dir: Path | None = None) -> RepoAnalysis:
@@ -134,12 +199,20 @@ def analyze_repo(repo_dir: Path | None = None) -> RepoAnalysis:
     analysis = RepoAnalysis()
     lang_counter: Counter[str] = Counter()
     seen_heavy: set[str] = set()
+    # Non-source globs (docs/config/assets/lockfiles) actually present in the
+    # repo — we only recommend excluding types the user really has.
+    seen_non_source: set[str] = set()
 
     for rel in files:
         # Note any heavy directories present so we can recommend excluding them.
         for part in Path(rel).parts:
             if part in _HEAVY_DIR_CANDIDATES:
                 seen_heavy.add(part)
+        ext = Path(rel).suffix.lower()
+        if ext in _NON_SOURCE_EXT_GLOB:
+            seen_non_source.add(_NON_SOURCE_EXT_GLOB[ext])
+        elif ext in _SKIP_EXT:
+            seen_non_source.add(f"*{ext}")
         if not _is_reviewable(rel):
             continue
         abs_path = repo_dir / rel
@@ -156,17 +229,28 @@ def analyze_repo(repo_dir: Path | None = None) -> RepoAnalysis:
 
     analysis.languages = lang_counter.most_common()
     analysis.recommended_languages = [lang for lang, _ in lang_counter.most_common(6)]
-    analysis.recommended_excludes = _recommend_excludes(seen_heavy)
+    analysis.recommended_excludes = _recommend_excludes(seen_heavy, seen_non_source)
     analysis.recommended_max_files = _recommend_max_files(analysis.total_files)
     analysis.recommended_concurrency = _recommend_concurrency(analysis.total_files)
     return analysis
 
 
-def _recommend_excludes(seen_heavy: set[str]) -> list[str]:
-    """Recommend excludes: any heavy dirs present + common lockfile globs."""
-    excludes = [f"{d}/**" for d in sorted(seen_heavy)]
-    excludes.extend(_LOCKFILE_GLOBS)
-    return excludes
+def _recommend_excludes(seen_heavy: set[str], seen_non_source: set[str]) -> list[str]:
+    """Recommend excludes based on what the repo actually contains.
+
+    Combines: heavy build/dependency dirs that are present, the non-source file
+    types (docs/config/assets/lockfiles) actually seen, and lockfiles. This is
+    repo-specific rather than a static guess — a pure-Python repo won't be told to
+    exclude ``*.min.js`` it doesn't have, and a repo full of ``.md``/``.yaml`` will
+    be.
+    """
+    heavy = [f"{d}/**" for d in sorted(seen_heavy)]
+    # Always suggest the common lockfile globs (cheap, near-universally correct).
+    lockfiles = ["*.lock"]
+    non_source = sorted(seen_non_source - set(lockfiles))
+    # De-dupe while preserving a stable, readable order: dirs, then file globs.
+    return heavy + non_source + lockfiles
+
 
 
 def _recommend_max_files(total_files: int) -> int:
@@ -192,19 +276,62 @@ def estimate_scan_seconds(
     *,
     tokens_per_second: float,
     concurrency: int,
+    file_count: int | None = None,
+    per_call_overhead: float = _PER_CALL_OVERHEAD_SECONDS,
 ) -> tuple[float, float]:
     """Estimate a full-repo scan's wall-clock time as a (low, high) range.
 
-    The model latency scales with text volume, so we drive the estimate from
-    tokens (≈ chars/4) rather than file count:
+    A scan makes **one API call per file**, so the estimate must model per-call
+    cost, not treat the repo as one continuous token stream (that older model
+    produced absurd "~0 seconds" results for small repos). Each call costs a fixed
+    ``per_call_overhead`` (connection + prompt processing + output latency) plus
+    the time to process that file's tokens. Calls run ``concurrency`` at a time:
 
-        seconds ≈ (total_tokens / tokens_per_second) / effective_concurrency
+        per_file  ≈ per_call_overhead + (tokens_per_file / tokens_per_second)
+        batches   = ceil(file_count / concurrency)
+        seconds   ≈ batches × per_file
 
-    ``tokens_per_second`` should come from one real timed sample review so the
-    number reflects the user's actual provider/model speed. We widen the point
-    estimate into a ±40% range because per-file latency varies a lot in practice.
+    ``file_count`` defaults to the analysis's reviewable file count; pass a smaller
+    value to reflect a ``--max-files`` cap. ``tokens_per_second`` and
+    ``per_call_overhead`` should come from one real timed sample (see ``aicr
+    scan``) so the number reflects the user's actual provider/model speed. We widen
+    the point estimate into a ±40% range because per-file latency varies a lot.
     """
-    effective_concurrency = max(1, concurrency)
+    files = analysis.total_files if file_count is None else file_count
+    if files <= 0:
+        return 0.0, 0.0
     tps = max(1.0, tokens_per_second)
-    point = (analysis.estimated_tokens / tps) / effective_concurrency
+    effective_concurrency = max(1, concurrency)
+
+    avg_tokens_per_file = analysis.estimated_tokens / files
+    per_file_seconds = per_call_overhead + (avg_tokens_per_file / tps)
+    batches = math.ceil(files / effective_concurrency)
+    point = batches * per_file_seconds
     return point * 0.6, point * 1.4
+
+
+def estimate_from_sample(
+    *,
+    file_count: int,
+    concurrency: int,
+    sample_seconds: float,
+) -> tuple[float, float]:
+    """Measured scan estimate: extrapolate from one real, timed sample review.
+
+    ``sample_seconds`` is the wall-clock time a single representative-sized file
+    took to review (see ``scan.measure_sample_seconds``). Since files are reviewed
+    ``concurrency`` at a time, the whole scan is roughly ``ceil(files/concurrency)``
+    batches, each about as long as that sample:
+
+        seconds ≈ ceil(file_count / concurrency) × sample_seconds
+
+    This replaces the guessed-throughput estimate with the user's actual
+    provider/model speed. Widened to a ±40% range for the usual latency variance.
+    """
+    if file_count <= 0:
+        return 0.0, 0.0
+    batches = math.ceil(file_count / max(1, concurrency))
+    point = batches * max(0.0, sample_seconds)
+    return point * 0.6, point * 1.4
+
+
