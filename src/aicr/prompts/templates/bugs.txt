@@ -1,0 +1,5 @@
+BUGS: Flag logic errors, off-by-one mistakes, null/None dereferences, unhandled
+exceptions, incorrect conditionals, race conditions, resource leaks (unclosed
+files/connections), incorrect error handling, and edge cases the code fails to
+handle. Use severity "critical" for defects that will cause incorrect results or
+crashes, "warning" for likely bugs, "info" for risky patterns.

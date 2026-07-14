@@ -1,0 +1,143 @@
+"""CLI commands via click's CliRunner (no real API calls — plan §10)."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+from click.testing import CliRunner
+
+from aicr.cli import cli
+
+
+def _init_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.dev"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+
+
+def test_version() -> None:
+    result = CliRunner().invoke(cli, ["--version"])
+    assert result.exit_code == 0
+    assert "aicr" in result.output
+
+
+def test_install_hook_creates_executable(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, ["install-hook"])
+    assert result.exit_code == 0
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    assert hook.exists()
+    assert "aicr review" in hook.read_text()
+    assert hook.stat().st_mode & 0o111  # executable bit set
+
+
+def test_install_hook_idempotent(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    assert runner.invoke(cli, ["install-hook"]).exit_code == 0
+    # Second run should not error (already ours).
+    assert runner.invoke(cli, ["install-hook"]).exit_code == 0
+
+
+def test_install_hook_refuses_foreign_hook(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\necho existing\n")
+    result = CliRunner().invoke(cli, ["install-hook"])
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+
+
+def test_config_shows_missing_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    result = CliRunner().invoke(cli, ["config"])
+    assert result.exit_code == 0
+    assert "MISSING" in result.output
+
+
+def test_review_nothing_staged(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    result = CliRunner().invoke(cli, ["review"])
+    assert result.exit_code == 0
+    assert "Nothing staged" in result.output
+
+
+def test_review_missing_key_does_not_block(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    # Stage a change so we get past the "nothing staged" branch to the key check.
+    (tmp_path / "a.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+    result = CliRunner().invoke(cli, ["review"])
+    # Warn-only: config error prints but exit code stays 0 (never blocks commit).
+    assert result.exit_code == 0
+    assert "OPENROUTER_API_KEY" in result.output
+
+
+def test_review_skip_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AICR_SKIP", "1")
+    result = CliRunner().invoke(cli, ["review"])
+    assert result.exit_code == 0
+
+
+def test_enable_installs_hook(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, ["enable"])
+    assert result.exit_code == 0
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    assert hook.exists()
+    assert "aicr review" in hook.read_text()
+
+
+def test_disable_removes_hook(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    assert runner.invoke(cli, ["enable"]).exit_code == 0
+    result = runner.invoke(cli, ["disable"])
+    assert result.exit_code == 0
+    assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
+
+
+def test_disable_when_no_hook(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, ["disable"])
+    assert result.exit_code == 0
+    assert "No aicr hook" in result.output
+
+
+def test_help_lists_enable_and_disable() -> None:
+    result = CliRunner().invoke(cli, ["--help"])
+    assert result.exit_code == 0
+    assert "enable" in result.output
+    assert "disable" in result.output
+    # Deprecated aliases are hidden from the top-level help.
+    assert "install-hook" not in result.output
+
+
+def test_review_include_forces_excluded_file(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    # Exclude *.md via config, then force-include it for one run.
+    (tmp_path / ".aicr.yaml").write_text('exclude_paths: ["*.md"]\n')
+    (tmp_path / "notes.md").write_text("# hi\n")
+    subprocess.run(["git", "add", "notes.md"], cwd=tmp_path, check=True)
+
+    # Without --include, the only staged file is excluded → nothing to review.
+    result = CliRunner().invoke(cli, ["review"])
+    assert result.exit_code == 0
+    assert "Nothing staged" in result.output
+

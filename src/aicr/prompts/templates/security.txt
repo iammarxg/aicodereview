@@ -1,0 +1,6 @@
+SECURITY: Flag injection risks (SQL, command, XSS), hardcoded secrets or
+credentials, unsafe deserialization, path traversal, missing input validation,
+weak cryptography, use of insecure functions (eval, exec, pickle on untrusted
+data), improper authentication/authorization checks, and leaking sensitive data
+in logs or errors. Use "critical" for exploitable vulnerabilities, "warning" for
+weaknesses, "info" for hardening suggestions.

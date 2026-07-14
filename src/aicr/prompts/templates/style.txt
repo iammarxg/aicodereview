@@ -1,0 +1,5 @@
+STYLE: Flag deviations from common conventions for the language — inconsistent
+formatting, non-idiomatic constructs, missing type hints where the codebase uses
+them, naming-convention violations, and dead or commented-out code. Keep these
+low-severity ("info") unless they actively harm correctness or maintainability.
+Do not nitpick things an autoformatter would fix.

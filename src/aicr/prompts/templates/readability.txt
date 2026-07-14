@@ -1,0 +1,4 @@
+READABILITY: Flag unclear names, overly complex or deeply nested logic, long
+functions doing too much, missing or misleading comments where intent isn't
+obvious, magic numbers, duplicated logic, and confusing control flow. Prefer
+concrete refactoring suggestions. Severity is usually "info" or "warning".

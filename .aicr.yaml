@@ -1,0 +1,39 @@
+# aicr configuration for the aicr repo itself (dogfooding).
+# Safe to commit. The API key is NEVER stored here — set OPENROUTER_API_KEY
+# in your environment or a gitignored .env file.
+provider: openrouter
+model: openrouter/free               # auto-routes across free models; any OpenRouter model works
+categories: [bugs, security, readability, style]
+languages: [python]                  # this repo is Python; renderer still auto-detects others
+
+# exclude_paths is the single source of truth for what gets skipped. Everything
+# NOT listed here is reviewed — so all Python, prompt templates, shell hook,
+# pyproject.toml, and CI/config files are in scope. Non-critical, non-code files
+# (docs, license, lockfiles, build artifacts, caches, test fixtures) are excluded.
+exclude_paths:
+  # Documentation & prose — not code
+  - "*.md"
+  - "LICENSE"
+  - "docs/**"
+  # Test fixtures — raw sample diffs, reviewing them is pure noise
+  - "tests/fixtures/**"
+  # Dependency locks & vendored deps
+  - "*.lock"
+  - "node_modules/**"
+  # Build artifacts & packaging output
+  - "dist/**"
+  - "build/**"
+  - "*.egg-info/**"
+  # Tooling / runtime caches
+  - "__pycache__/**"
+  - ".venv/**"
+  - ".mypy_cache/**"
+  - ".pytest_cache/**"
+  - ".ruff_cache/**"
+  # OS cruft
+  - ".DS_Store"
+
+max_diff_lines_per_file: 800         # skip files with more added lines than this
+max_files_per_review: 50             # cap concurrent LLM calls per commit
+concurrency: 5                       # max simultaneous provider requests
+severity_display_threshold: info     # show info, warning, critical (everything)

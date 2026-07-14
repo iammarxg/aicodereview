@@ -1,0 +1,17 @@
+diff --git a/app.py b/app.py
+index 111..222 100644
+--- a/app.py
++++ b/app.py
+@@ -10,2 +10,4 @@ def handler():
+     x = 1
+     y = 2
++    z = x + y
++    return z
+diff --git a/util.js b/util.js
+index 333..444 100644
+--- a/util.js
++++ b/util.js
+@@ -1,2 +1,3 @@
+ function noop() {}
++const API = "https://example.com";
+ module.exports = { noop };

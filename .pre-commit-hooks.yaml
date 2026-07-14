@@ -1,0 +1,17 @@
+# Manifest so others can use aicr via the pre-commit framework:
+#   repos:
+#     - repo: https://github.com/iammarxg/aicodereview
+#       rev: v0.1.0
+#       hooks:
+#         - id: aicr
+# always_run + pass_filenames: false because aicr reads the staged diff itself
+# via `git diff --cached`, rather than operating on the filenames pre-commit passes.
+- id: aicr
+  name: AI Code Review (aicr)
+  description: Review the staged diff with an LLM before committing (warn-only).
+  entry: aicr review --staged
+  language: python
+  stages: [pre-commit]
+  pass_filenames: false
+  always_run: true
+  verbose: true
