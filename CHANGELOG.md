@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-07-15
+
 ### Added
 - **`aicr scan`** — review the whole repository's existing code, not just a diff.
   It synthesizes a full-content "diff" per tracked, reviewable file and runs the
@@ -149,5 +151,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.2.0]: https://github.com/iammarxg/aicodereview/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/iammarxg/aicodereview/releases/tag/v0.1.0
 [0.3.0]: https://github.com/iammarxg/aicodereview/releases/tag/v0.3.0
-[Unreleased]: https://github.com/iammarxg/aicodereview/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/iammarxg/aicodereview/releases/tag/v0.4.0
+[Unreleased]: https://github.com/iammarxg/aicodereview/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/iammarxg/aicodereview/releases/tag/v0.4.1
