@@ -2,21 +2,23 @@
 
 Local-first AI code review that reviews your **staged git diff before you commit**.
 It reads `git diff --cached`, sends only the changed lines to an LLM (via
-[OpenRouter](https://openrouter.ai) or a local [Ollama](https://ollama.com)
-model), and prints inline, line-mapped comments — bugs, security risks,
-readability issues, and style suggestions — right in the terminal where you ran
-`git commit`.
+[OpenRouter](https://openrouter.ai), [Google Gemini](https://ai.google.dev), or a
+local [Ollama](https://ollama.com) model), and prints inline, line-mapped comments
+— bugs, security risks, readability issues, and style suggestions — right in the
+terminal where you ran `git commit`.
 
 - **Local-first** — runs on your machine as a git pre-commit hook.
 - **Warn-only** — flags issues but *never blocks* your commit (unless you opt in).
 - **Line-mapped** — every comment is tied to a real added/modified line.
-- **Provider-agnostic** — OpenRouter (cloud) and Ollama (local) today; the
-  adapter interface lets you add OpenAI, Anthropic, etc. without touching the
-  review pipeline (see [ARCHITECTURE.md](ARCHITECTURE.md)).
+- **Provider-agnostic** — OpenRouter (cloud), Gemini (cloud), and Ollama (local)
+  today; the adapter interface lets you add OpenAI, Anthropic, etc. without
+  touching the review pipeline (see [ARCHITECTURE.md](ARCHITECTURE.md)).
+
 
 > ⚠️ **Data flow:** with a cloud provider this tool sends your staged code diffs
-> to a third-party API (OpenRouter). Prefer **`provider: ollama`** for fully
-> local review where nothing leaves your machine.
+> to a third-party API (OpenRouter or Gemini). Prefer **`provider: ollama`** for
+> fully local review where nothing leaves your machine.
+
 
 ---
 
@@ -36,13 +38,21 @@ git add .
 git commit -m "your change"
 ```
 
-`aicr init` is an rclone-style wizard: it asks which provider you want, saves
-your OpenRouter key to a gitignored `.env` (never to `.aicr.yaml`), lets you pick
-categories and blocking behavior, optionally walks you through advanced options,
-and offers to install the pre-commit hook. The generated `.aicr.yaml` always
-lists every option — the ones you didn't set are written commented-out at their
-defaults, so the whole config surface is discoverable in one place. Prefer to do
-it by hand? Set `OPENROUTER_API_KEY`, write a `.aicr.yaml`, and run `aicr enable`.
+`aicr init` is an rclone-style wizard: it asks which provider you want, saves your
+API key to a gitignored `.env` (never to `.aicr.yaml`), lets you pick categories
+and blocking behavior, optionally walks you through advanced options, and offers to
+install the pre-commit hook. At the end it can **analyze your repo** (fast, no API
+calls) — reporting file/line/character counts, detected languages, and recommended
+excludes/limits tuned to its size, plus a rough full-repo scan-time estimate — and
+apply those recommendations to `.aicr.yaml`. The generated file always lists every
+option — the ones you didn't set are written commented-out at their defaults, so
+the whole config surface is discoverable in one place. Prefer to do it by hand? Set
+the provider's key env var, write a `.aicr.yaml`, and run `aicr enable`.
+
+Changed your mind? `aicr reset` removes everything aicr added to the repo — the
+pre-commit hook, `.aicr.yaml`, and the `.aicr/` cache — and offers to strip the API
+key line from `.env` (leaving any other variables untouched).
+
 
 
 You can also run a review manually, without committing:
@@ -76,11 +86,17 @@ usage (OpenRouter does; local Ollama has no billing).
 
 | Provider | Where it runs | API key | Select with |
 |---|---|---|---|
-| `openrouter` | Cloud, hundreds of models | required | `provider: openrouter` (default) |
+| `openrouter` | Cloud, hundreds of models | `OPENROUTER_API_KEY` | `provider: openrouter` (default) |
+| `gemini` | Cloud, Google Gemini (generous free tier) | `GEMINI_API_KEY` | `provider: gemini` + `model: gemini-2.0-flash` |
 | `ollama` | **Local**, private | none | `provider: ollama` + `model: llama3.1` |
+
+Each cloud provider reads its own key env var (shown above), from your environment
+or a gitignored `.env`. Get a Gemini key at
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
 For Ollama: install it, `ollama pull llama3.1`, then set `provider: ollama` in
 `.aicr.yaml` (optionally `base_url` if not on the default `localhost:11434`).
+
 
 ## Commands
 
@@ -90,7 +106,9 @@ For Ollama: install it, `ollama pull llama3.1`, then set `provider: ollama` in
 | `aicr review [--unstaged\|--range A..B] [--strict] [--no-cache] [--format cli\|json] [--category ...] [--model ...] [--include ...]` | Review changes. Warn-only (exit 0) unless `--strict`. |
 | `aicr enable [--force]` | Install `.git/hooks/pre-commit` in the current repo. |
 | `aicr disable` | Remove the aicr pre-commit hook. |
+| `aicr reset [--yes]` | Remove everything aicr added: hook, `.aicr.yaml`, and the `.aicr/` cache (offers to strip the key from `.env`). |
 | `aicr config` | Show the resolved configuration (never prints the API key). |
+
 
 `install-hook` / `uninstall-hook` remain as hidden aliases for `enable` /
 `disable`. Bypass a single commit: `AICR_SKIP=1 git commit -m "..."`.
@@ -128,11 +146,13 @@ aicr review --include "docker-compose.yml *.md"
 ## Configuration — `.aicr.yaml`
 
 Committable, human-editable, per-repo settings. The API key is **never** stored
-here — only read from `OPENROUTER_API_KEY` (env or `.env`).
+here — only read from the provider's key env var (e.g. `OPENROUTER_API_KEY` or
+`GEMINI_API_KEY`), from your environment or `.env`.
 
 ```yaml
-provider: openrouter          # or: ollama
-model: openrouter/free        # any OpenRouter model, or a pulled Ollama model
+provider: openrouter          # or: gemini, ollama
+model: openrouter/free        # an OpenRouter/Gemini model, or a pulled Ollama model
+
 # base_url: http://localhost:11434/v1   # override provider endpoint (e.g. Ollama)
 categories: [bugs, security, readability, style]
 languages: []                 # empty = auto-detect per file by extension
@@ -161,8 +181,9 @@ repos:
 ## Requirements
 
 - Python 3.11+
-- An OpenRouter API key (or a local Ollama install)
+- An OpenRouter or Gemini API key (or a local Ollama install)
 - `git` on your PATH
+
 
 ## License
 

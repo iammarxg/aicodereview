@@ -22,11 +22,18 @@ import click
 
 from aicr import __version__
 from aicr.cache import ReviewCache
-from aicr.config import DEFAULT_MODEL, Config, ConfigError, load_config
+from aicr.config import (
+    DEFAULT_MODEL,
+    Config,
+    ConfigError,
+    api_key_env_var,
+    load_config,
+)
 from aicr.diff.source import DiffMode, DiffSourceError, LocalGitSource
 from aicr.engine import run_review
 from aicr.models import ReviewResult, Severity
 from aicr.providers.base import ProviderError
+from aicr.providers.gemini import DEFAULT_GEMINI_MODEL
 from aicr.providers.ollama import DEFAULT_OLLAMA_BASE_URL
 from aicr.providers.registry import build_provider
 from aicr.report import cli_renderer, json_renderer
@@ -330,14 +337,114 @@ def config_cmd() -> None:
     click.echo(f"cache:      {'on' if config.cache_enabled else 'off'}")
     click.echo(f"blocking:   {config.severity_block_threshold or 'off (warn-only)'}")
     if config.requires_api_key():
-        click.echo(f"API key:    {key_state} (OPENROUTER_API_KEY)")
+        env_var = api_key_env_var(config.provider) or "OPENROUTER_API_KEY"
+        click.echo(f"API key:    {key_state} ({env_var})")
     else:
         click.echo("API key:    not required for this provider")
+
+
+@cli.command()
+@click.option("--yes", "assume_yes", is_flag=True, help="Skip the confirmation prompt.")
+def reset(assume_yes: bool) -> None:
+    """Fully remove aicr from this repo: hook, .aicr.yaml, and the cache.
+
+    Unlike ``disable`` (which only removes the hook), ``reset`` tears down
+    everything aicr created in the repository. It never touches ``.env`` without
+    asking — that file may hold your key or unrelated secrets — but it will offer
+    to strip the aicr key line if it finds one.
+    """
+    from aicr.cache import CACHE_DIRNAME
+    from aicr.hooks.install import HookInstallError, uninstall_hook
+
+    cwd = Path.cwd()
+    config_path = cwd / ".aicr.yaml"
+    cache_dir = cwd / CACHE_DIRNAME
+
+    # Build the list of things that actually exist, so we can show the user
+    # exactly what will be removed before they confirm.
+    targets: list[str] = []
+    if config_path.exists():
+        targets.append(config_path.name)
+    if cache_dir.exists():
+        targets.append(f"{CACHE_DIRNAME}/ (cache)")
+    hook_present = _aicr_hook_present(cwd)
+    if hook_present:
+        targets.append("pre-commit hook")
+
+    if not targets:
+        click.echo("Nothing to reset — aicr isn't set up in this repo.")
+        return
+
+    click.echo("This will remove:")
+    for t in targets:
+        click.echo(f"  - {t}")
+    if not assume_yes and not click.confirm("Proceed?", default=False):
+        click.echo("Aborted — nothing changed.")
+        return
+
+    if hook_present:
+        try:
+            if uninstall_hook():
+                click.echo("Removed pre-commit hook.")
+        except HookInstallError as exc:
+            _warn(str(exc))
+    if config_path.exists():
+        config_path.unlink()
+        click.echo(f"Removed {config_path.name}.")
+    if cache_dir.exists():
+        import shutil
+
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        click.echo(f"Removed {CACHE_DIRNAME}/ cache.")
+
+    _maybe_strip_env_key(cwd, assume_yes=assume_yes)
+    click.echo("Done. aicr has been removed from this repository.")
+
+
+def _aicr_hook_present(cwd: Path) -> bool:
+    """True if the repo's pre-commit hook was installed by aicr."""
+    try:
+        from aicr.hooks.install import _git_hooks_dir
+
+        hook = _git_hooks_dir(cwd) / "pre-commit"
+    except Exception:
+        return False
+    if not hook.exists():
+        return False
+    return "aicr review" in hook.read_text(encoding="utf-8", errors="replace")
+
+
+def _maybe_strip_env_key(cwd: Path, *, assume_yes: bool) -> None:
+    """Offer to remove aicr's API-key line(s) from .env, leaving the rest intact."""
+    from aicr.config import PROVIDER_API_KEY_ENV
+
+    env_path = cwd / ".env"
+    if not env_path.exists():
+        return
+    key_vars = set(PROVIDER_API_KEY_ENV.values())
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    key_lines = [ln for ln in lines if ln.split("=", 1)[0].strip() in key_vars]
+    if not key_lines:
+        return
+    names = ", ".join(sorted({ln.split("=", 1)[0].strip() for ln in key_lines}))
+    if not assume_yes and not click.confirm(
+        f"Also remove the API key line(s) ({names}) from .env?", default=False
+    ):
+        click.echo("Left .env untouched.")
+        return
+    remaining = [ln for ln in lines if ln.split("=", 1)[0].strip() not in key_vars]
+    if remaining:
+        env_path.write_text("\n".join(remaining) + "\n", encoding="utf-8")
+    else:
+        # Nothing else in the file — remove it entirely rather than leave it empty.
+        env_path.unlink()
+    click.echo(f"Removed {names} from .env.")
 
 
 # --------------------------------------------------------------------------- #
 # `aicr init` — interactive, rclone-style setup wizard
 # --------------------------------------------------------------------------- #
+
 
 _CATEGORY_CHOICES = ["bugs", "security", "readability", "style"]
 
@@ -359,7 +466,9 @@ def init(force: bool) -> None:
 
     provider = _prompt_provider()
     if provider == "openrouter":
-        settings = _prompt_openrouter(cwd)
+        settings = _prompt_cloud(cwd, provider="openrouter")
+    elif provider == "gemini":
+        settings = _prompt_cloud(cwd, provider="gemini")
     else:
         settings = _prompt_ollama()
 
@@ -374,7 +483,6 @@ def init(force: bool) -> None:
     _write_config(config_path, provider=provider, settings=settings)
     click.echo(f"\nWrote {config_path}")
 
-
     if click.confirm("Install the git pre-commit hook now?", default=True):
         try:
             from aicr.hooks.install import install_hook
@@ -384,7 +492,70 @@ def init(force: bool) -> None:
         except Exception as exc:  # HookInstallError or not-a-repo
             _warn(f"could not install hook ({exc}). Run `aicr enable` later.")
 
+    # Offer a repo analysis last: it's the most useful when everything else is
+    # already configured, and it can recommend settings tuned to this codebase.
+    _maybe_analyze_repo(cwd, config_path, provider=provider, settings=settings)
+
     click.echo(click.style("\nDone. Try: git add . && aicr review", bold=True))
+
+
+
+def _maybe_analyze_repo(
+    cwd: Path, config_path: Path, *, provider: str, settings: dict[str, object]
+) -> None:
+    """Offer a fast, local repo analysis and optionally apply recommended settings.
+
+    This scans tracked files (no LLM calls) to report how much code the repo has,
+    detect languages and heavy directories, and recommend efficient ``.aicr.yaml``
+    settings tuned to its size. It also estimates how long a full-repo review
+    would take, so the user knows what a future ``aicr scan`` would cost.
+    """
+    click.echo(
+        "\nI can analyze this repo to recommend settings that make reviews fast "
+        "and efficient for its size (and estimate a full-repo scan time)."
+    )
+    if not click.confirm("Analyze the repository now? (fast, no API calls)", default=True):
+        return
+
+    from aicr.analyze import AnalysisError, analyze_repo, estimate_scan_seconds
+
+    try:
+        analysis = analyze_repo(cwd)
+    except AnalysisError as exc:
+        _warn(f"couldn't analyze the repo ({exc}).")
+        return
+
+    langs = ", ".join(f"{name} ({n})" for name, n in analysis.languages[:6]) or "none detected"
+    click.echo(
+        f"\n  {analysis.total_files} files · {analysis.total_lines:,} lines · "
+        f"~{analysis.total_chars:,} chars · ~{analysis.estimated_tokens:,} tokens (approx.)"
+    )
+    click.echo(f"  Languages: {langs}")
+    click.echo(f"  Recommended excludes:  {', '.join(analysis.recommended_excludes)}")
+    click.echo(
+        f"  Recommended limits:    max_files={analysis.recommended_max_files}, "
+        f"concurrency={analysis.recommended_concurrency}"
+    )
+
+    # A rough, clearly-labelled full-scan estimate using a conservative default
+    # throughput (a real timed sample is a future `aicr scan` feature).
+    low, high = estimate_scan_seconds(
+        analysis,
+        tokens_per_second=800.0,  # conservative default; provider/model dependent
+        concurrency=analysis.recommended_concurrency,
+    )
+    click.echo(
+        f"  Full-repo scan estimate: ~{low / 60:.1f}–{high / 60:.1f} min "
+        "(very approximate; depends on your model's speed)."
+    )
+
+    if click.confirm("\nApply these recommended settings to .aicr.yaml?", default=True):
+        settings["languages"] = ", ".join(analysis.recommended_languages)
+        settings["exclude_paths"] = ", ".join(analysis.recommended_excludes)
+        settings["max_files_per_review"] = analysis.recommended_max_files
+        settings["concurrency"] = analysis.recommended_concurrency
+        _write_config(config_path, provider=provider, settings=settings)
+        click.echo(f"Updated {config_path.name} with recommended settings.")
 
 
 def _prompt_menu(title: str, options: list[tuple[str, str]], *, default: int = 1) -> str:
@@ -401,30 +572,45 @@ def _prompt_menu(title: str, options: list[tuple[str, str]], *, default: int = 1
 
 
 
+
 def _prompt_provider() -> str:
     return _prompt_menu(
         "Which LLM provider?",
         [
             ("openrouter", "Cloud, many models (needs an API key)"),
+            ("gemini", "Cloud, Google Gemini (generous free tier, needs a key)"),
             ("ollama", "Local models, private, no key (needs Ollama running)"),
         ],
         default=1,
     )
 
 
-def _prompt_openrouter(cwd: Path) -> dict[str, object]:
-    model = click.prompt("Model", default=DEFAULT_MODEL)
+# Per-cloud-provider defaults for the wizard: default model and key sign-up URL.
+_CLOUD_DEFAULTS: dict[str, tuple[str, str]] = {
+    "openrouter": (DEFAULT_MODEL, "https://openrouter.ai/keys"),
+    "gemini": (DEFAULT_GEMINI_MODEL, "https://aistudio.google.com/apikey"),
+}
+
+
+def _prompt_cloud(cwd: Path, *, provider: str) -> dict[str, object]:
+    """Prompt for a cloud provider's model and API key (stored in .env)."""
+    default_model, key_url = _CLOUD_DEFAULTS[provider]
+    env_var = api_key_env_var(provider) or "OPENROUTER_API_KEY"
+
+    model = click.prompt("Model", default=default_model)
     settings: dict[str, object] = {"model": model}
 
     click.echo("\nYour API key is stored in .env (gitignored), never in .aicr.yaml.")
-    if click.confirm("Enter your OpenRouter API key now?", default=True):
-        key = click.prompt("OPENROUTER_API_KEY", hide_input=True, default="", show_default=False)
+    click.echo(f"Get a key at {key_url}")
+    if click.confirm(f"Enter your {provider} API key now?", default=True):
+        key = click.prompt(env_var, hide_input=True, default="", show_default=False)
         if key:
-            _write_env(cwd, key)
-            click.echo("Saved key to .env")
+            _write_env(cwd, key, env_var=env_var)
+            click.echo(f"Saved key to .env ({env_var})")
     else:
-        click.echo("Skipped — set OPENROUTER_API_KEY in your env or .env before reviewing.")
+        click.echo(f"Skipped — set {env_var} in your env or .env before reviewing.")
     return settings
+
 
 
 def _prompt_ollama() -> dict[str, object]:
@@ -505,18 +691,19 @@ def _prompt_advanced() -> dict[str, object]:
 
 
 
-def _write_env(cwd: Path, key: str) -> None:
-    """Append/update OPENROUTER_API_KEY in .env without clobbering other vars."""
+def _write_env(cwd: Path, key: str, *, env_var: str = "OPENROUTER_API_KEY") -> None:
+    """Append/update ``env_var`` in .env without clobbering other vars."""
     env_path = cwd / ".env"
     lines: list[str] = []
     if env_path.exists():
         lines = [
             ln
             for ln in env_path.read_text(encoding="utf-8").splitlines()
-            if not ln.startswith("OPENROUTER_API_KEY=")
+            if not ln.startswith(f"{env_var}=")
         ]
-    lines.append(f"OPENROUTER_API_KEY={key}")
+    lines.append(f"{env_var}={key}")
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 
 def _yaml_list(items: list[str]) -> str:

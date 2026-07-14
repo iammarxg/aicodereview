@@ -173,9 +173,11 @@ def test_config_shows_blocking_and_cache(tmp_path: Path, monkeypatch) -> None:
 def test_init_writes_config_for_ollama(tmp_path: Path, monkeypatch) -> None:
     _init_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
-    # Wizard: provider=2 (ollama), base_url default, model default,
-    # categories default, blocking? no, advanced? no, install hook? no.
-    answers = "2\n\n\n\nn\nn\nn\n"
+    # Wizard: provider=2 (ollama... now menu item 3), base_url default, model
+    # default, categories default, blocking? no, advanced? no, install hook? no,
+    # analyze repo? no.
+    answers = "3\n\n\n\nn\nn\nn\nn\n"
+
     result = CliRunner().invoke(cli, ["init"], input=answers)
     assert result.exit_code == 0
     config_text = (tmp_path / ".aicr.yaml").read_text()
@@ -187,8 +189,10 @@ def test_init_writes_key_to_env_for_openrouter(tmp_path: Path, monkeypatch) -> N
     _init_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     # provider=1 (openrouter), model default, enter key? yes, key value,
-    # categories default, blocking? no, advanced? no, install hook? no.
-    answers = "1\n\ny\nsk-secret\n\nn\nn\nn\n"
+    # categories default, blocking? no, advanced? no, install hook? no,
+    # analyze repo? no.
+    answers = "1\n\ny\nsk-secret\n\nn\nn\nn\nn\n"
+
     result = CliRunner().invoke(cli, ["init"], input=answers)
     assert result.exit_code == 0
     assert "provider: openrouter" in (tmp_path / ".aicr.yaml").read_text()
@@ -202,8 +206,9 @@ def test_init_writes_all_options_even_when_advanced_skipped(
     _init_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     # provider=1, model default, key? no, categories default, blocking? no,
-    # advanced? no, install hook? no.
-    answers = "1\n\nn\n\nn\nn\nn\n"
+    # advanced? no, install hook? no, analyze repo? no.
+    answers = "1\n\nn\n\nn\nn\nn\nn\n"
+
     result = CliRunner().invoke(cli, ["init"], input=answers)
     assert result.exit_code == 0
     config_text = (tmp_path / ".aicr.yaml").read_text()
@@ -229,11 +234,12 @@ def test_init_writes_all_options_even_when_advanced_skipped(
 def test_init_advanced_options_written_live(tmp_path: Path, monkeypatch) -> None:
     _init_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
-    # provider=2 (ollama), base_url default, model default, categories default,
+    # provider=3 (ollama), base_url default, model default, categories default,
     # blocking? no, advanced? YES, then: languages "python", exclude default,
     # max_lines 500, max_files 20, concurrency 3, display menu=1 (info),
-    # cache? yes, install hook? no.
-    answers = "2\n\n\n\nn\ny\npython\n\n500\n20\n3\n1\ny\nn\n"
+    # cache? yes, install hook? no, analyze repo? no.
+    answers = "3\n\n\n\nn\ny\npython\n\n500\n20\n3\n1\ny\nn\nn\n"
+
     result = CliRunner().invoke(cli, ["init"], input=answers)
     assert result.exit_code == 0
     config_text = (tmp_path / ".aicr.yaml").read_text()
@@ -241,6 +247,56 @@ def test_init_advanced_options_written_live(tmp_path: Path, monkeypatch) -> None
     assert 'languages: ["python"]' in config_text
     assert "max_diff_lines_per_file: 500" in config_text
     assert "concurrency: 3" in config_text
+
+
+def test_reset_removes_hook_config_and_cache(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    assert runner.invoke(cli, ["enable"]).exit_code == 0
+    (tmp_path / ".aicr.yaml").write_text("provider: openrouter\n")
+    cache_dir = tmp_path / ".aicr" / "cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "reviews.json").write_text("{}")
+
+    result = runner.invoke(cli, ["reset", "--yes"])
+    assert result.exit_code == 0
+    assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
+    assert not (tmp_path / ".aicr.yaml").exists()
+    assert not (tmp_path / ".aicr").exists()
+
+
+def test_reset_nothing_to_do(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, ["reset", "--yes"])
+    assert result.exit_code == 0
+    assert "Nothing to reset" in result.output
+
+
+def test_reset_strips_key_from_env_with_yes(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".aicr.yaml").write_text("provider: openrouter\n")
+    (tmp_path / ".env").write_text("OPENROUTER_API_KEY=sk-secret\nOTHER=keep\n")
+
+    result = CliRunner().invoke(cli, ["reset", "--yes"])
+    assert result.exit_code == 0
+    env_text = (tmp_path / ".env").read_text()
+    assert "OPENROUTER_API_KEY" not in env_text
+    assert "OTHER=keep" in env_text
+
+
+def test_reset_aborts_without_confirmation(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".aicr.yaml").write_text("provider: openrouter\n")
+    # Answer "n" to the Proceed? prompt.
+    result = CliRunner().invoke(cli, ["reset"], input="n\n")
+    assert result.exit_code == 0
+    assert "Aborted" in result.output
+    assert (tmp_path / ".aicr.yaml").exists()
+
 
 
 

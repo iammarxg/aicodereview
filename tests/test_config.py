@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aicr.config import ConfigError, load_config
+from aicr.config import ConfigError, api_key_env_var, load_config
 
 
 def test_defaults_when_no_file(tmp_path: Path, monkeypatch) -> None:
@@ -28,6 +28,24 @@ def test_missing_key_ok_when_not_required(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     config = load_config(cwd=tmp_path, require_api_key=False, load_env=False)
     assert config.api_key is None
+
+
+def test_gemini_reads_its_own_env_var(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret")
+    (tmp_path / ".aicr.yaml").write_text("provider: gemini\n", encoding="utf-8")
+    config = load_config(cwd=tmp_path, load_env=False)
+    assert config.api_key == "gm-secret"
+    assert api_key_env_var("gemini") == "GEMINI_API_KEY"
+
+
+def test_gemini_missing_key_names_gemini_var(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    (tmp_path / ".aicr.yaml").write_text("provider: gemini\n", encoding="utf-8")
+    with pytest.raises(ConfigError) as exc:
+        load_config(cwd=tmp_path, load_env=False)
+    assert "GEMINI_API_KEY" in str(exc.value)
+
 
 
 def test_yaml_categories_normalized(tmp_path: Path, monkeypatch) -> None:

@@ -18,10 +18,12 @@ from aicr.config import Config
 from aicr.models import Category, DiffFile, ReviewComment, ReviewResult
 from aicr.providers.base import LLMProvider, MalformedResponseError, ProviderError
 
-# Called when a file actually starts being reviewed (after acquiring the
-# concurrency semaphore): (path, started_count, total_to_review). Used by the
-# CLI to show a live "Reviewing …" status without altering the final report.
+# Called when a file finishes being reviewed: (path, done_count, total_to_review).
+# Used by the CLI to show a live "Reviewing …" status without altering the final
+# report. Fired on completion (not start) so the count climbs visibly 1→N under
+# concurrency rather than jumping straight to N/N.
 ProgressCallback = Callable[[str, int, int], None]
+
 
 
 
@@ -54,28 +56,33 @@ async def _review_one(
 ) -> list[ReviewComment]:
     """Review a single file, converting failures into a counted error (never raise)."""
     async with semaphore:
-        # Report *inside* the semaphore so the count reflects work actually
-        # starting (bounded by concurrency), not just being scheduled.
-        if progress is not None:
-            progress.starting(diff_file.path)
         try:
             return await provider.review(diff_file, categories, languages)
         except (ProviderError, MalformedResponseError) as exc:
             errors.append(f"{diff_file.path}: {exc}")
             return []
+        finally:
+            # Report on *completion*, not start: reviews run concurrently, so all
+            # files up to the concurrency limit begin almost simultaneously and a
+            # start-based counter would jump straight to N/N. Completions are
+            # spaced out over real LLM latency, so the count visibly climbs 1→N
+            # and names the file that just finished.
+            if progress is not None:
+                progress.finished(diff_file.path)
 
 
 class _ProgressTracker:
-    """Turns per-file start events into monotonic (path, n, total) callbacks."""
+    """Turns per-file completion events into monotonic (path, n, total) callbacks."""
 
     def __init__(self, total: int, callback: ProgressCallback) -> None:
         self._total = total
         self._callback = callback
         self._done = 0
 
-    def starting(self, path: str) -> None:
+    def finished(self, path: str) -> None:
         self._done += 1
         self._callback(path, self._done, self._total)
+
 
 
 async def run_review(
@@ -93,12 +100,12 @@ async def run_review(
     (plan §7/§8). Files whose reviewable content is unchanged since a previous
     run are served from ``cache`` (when provided) instead of the provider.
 
-    ``progress_callback`` (optional) is invoked as each file *starts* being sent
-    to the provider — this drives the live "Reviewing …" status. It fires only
-    for cache misses (hits do no work), and never changes the final result.
+    ``progress_callback`` (optional) is invoked as each file *finishes* being
+    reviewed — this drives the live "Reviewing …" status. It fires only for
+    cache misses (hits do no work), and never changes the final result.
     """
-
     start = time.perf_counter()
+
     reviewable, skipped_binary, skipped_too_large = _reviewable(
         files, config.max_diff_lines_per_file
     )
@@ -138,8 +145,8 @@ async def run_review(
         )
     )
 
-
     # Record freshly-reviewed files back into the cache (only clean successes).
+
     errored_paths = {msg.split(":", 1)[0] for msg in errors}
     fresh_comments: list[ReviewComment] = []
     for f, file_comments in zip(to_review, results, strict=True):

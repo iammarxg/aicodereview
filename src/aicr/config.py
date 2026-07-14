@@ -27,9 +27,22 @@ CONFIG_FILENAME = ".aicr.yaml"
 # Valid severities, in ascending order (used to validate threshold settings).
 _SEVERITIES: tuple[Severity, ...] = ("info", "warning", "critical")
 
-# Providers that talk to a remote API and therefore need OPENROUTER_API_KEY.
-# Local providers (e.g. Ollama) run without a key.
-_PROVIDERS_REQUIRING_KEY = {"openrouter"}
+# Which environment variable holds each cloud provider's API key. Local
+# providers (e.g. Ollama) are absent here — they need no key. Adding a provider
+# is purely additive: register its key var here and a factory in the registry.
+PROVIDER_API_KEY_ENV: dict[str, str] = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+# Providers that talk to a remote API and therefore need an API key.
+_PROVIDERS_REQUIRING_KEY = set(PROVIDER_API_KEY_ENV)
+
+
+def api_key_env_var(provider: str) -> str | None:
+    """Return the env var name holding ``provider``'s API key, or None if local."""
+    return PROVIDER_API_KEY_ENV.get(provider)
+
 
 
 class ConfigError(Exception):
@@ -137,14 +150,28 @@ def load_config(
     except Exception as exc:  # pydantic ValidationError -> friendly message
         raise ConfigError(f"Invalid configuration in {config_path}: {exc}") from exc
 
-    config.api_key = os.environ.get("OPENROUTER_API_KEY")
+    # Read the key from the provider's own env var (falls back to OpenRouter's
+    # for unknown/legacy providers so nothing regresses).
+    env_var = api_key_env_var(config.provider) or "OPENROUTER_API_KEY"
+    config.api_key = os.environ.get(env_var)
 
     if require_api_key and config.requires_api_key() and not config.api_key:
-        raise ConfigError(
-            "OPENROUTER_API_KEY is not set.\n"
-            "  1. Copy .env.example to .env\n"
-            "  2. Add your key from https://openrouter.ai/keys\n"
-            "  (or export OPENROUTER_API_KEY in your shell)\n"
-            "  Tip: run `aicr init`, or use a local provider with `provider: ollama`."
-        )
+        raise ConfigError(_missing_key_message(config.provider, env_var))
     return config
+
+
+def _missing_key_message(provider: str, env_var: str) -> str:
+    """Friendly, provider-specific 'key is missing' guidance."""
+    key_urls = {
+        "openrouter": "https://openrouter.ai/keys",
+        "gemini": "https://aistudio.google.com/apikey",
+    }
+    url = key_urls.get(provider, "your provider's dashboard")
+    return (
+        f"{env_var} is not set.\n"
+        "  1. Copy .env.example to .env (or edit your shell env)\n"
+        f"  2. Add your key from {url}\n"
+        f"  (or export {env_var} in your shell)\n"
+        "  Tip: run `aicr init`, or use a local provider with `provider: ollama`."
+    )
+

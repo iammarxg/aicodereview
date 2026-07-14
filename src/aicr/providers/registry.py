@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 from aicr.config import Config
 from aicr.providers.base import LLMProvider, ProviderError
+from aicr.providers.gemini import GeminiProvider
 from aicr.providers.ollama import OllamaProvider
 from aicr.providers.openrouter import OpenRouterProvider
 
@@ -21,6 +22,13 @@ def _build_openrouter(config: Config) -> LLMProvider:
     return OpenRouterProvider(**kwargs)  # type: ignore[arg-type]
 
 
+def _build_gemini(config: Config) -> LLMProvider:
+    kwargs: dict[str, object] = {"api_key": config.api_key or "", "model": config.model}
+    if config.base_url:
+        kwargs["base_url"] = config.base_url
+    return GeminiProvider(**kwargs)  # type: ignore[arg-type]
+
+
 def _build_ollama(config: Config) -> LLMProvider:
     kwargs: dict[str, object] = {"model": config.model}
     if config.base_url:
@@ -30,8 +38,10 @@ def _build_ollama(config: Config) -> LLMProvider:
 
 _FACTORIES: dict[str, Callable[[Config], LLMProvider]] = {
     "openrouter": _build_openrouter,
+    "gemini": _build_gemini,
     "ollama": _build_ollama,
 }
+
 
 
 def available_providers() -> list[str]:

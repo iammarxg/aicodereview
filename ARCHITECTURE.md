@@ -60,13 +60,17 @@ class LLMProvider(ABC):
     ) -> list[ReviewComment]: ...
 ```
 
-- `OpenRouterProvider` (cloud) and `OllamaProvider` (fully local, no key, no
-  network egress) are the two built-in implementations. Both talk to an
+- `OpenRouterProvider` (cloud), `GeminiProvider` (cloud, Google's
+  OpenAI-compatible endpoint), and `OllamaProvider` (fully local, no key, no
+  network egress) are the built-in implementations. All talk to an
   OpenAI-compatible `/chat/completions` endpoint, so they share the parsing and
-  usage-extraction shape.
-- `registry.py` maps the config string `provider: openrouter|ollama` → the
+  usage-extraction shape — a new OpenAI-compatible provider is mostly a base URL,
+  a default model, and a key env var.
+- `registry.py` maps the config string `provider: openrouter|gemini|ollama` → the
   class (threading `base_url` when set), so switching providers is a one-line
-  config change.
+  config change. Each cloud provider declares its own API-key env var
+  (`config.PROVIDER_API_KEY_ENV`), so `config.py` reads and reports the right one.
+
 - `parse_comments()` (in `providers/base.py`) is shared, provider-agnostic
   response handling: it extracts JSON from the raw model text (tolerating
   markdown fences / surrounding prose), validates each item against
@@ -98,6 +102,17 @@ specifics:
 Because these are the only things crossing stage boundaries, each stage is unit
 tested in isolation (see `tests/`), and a `FakeProvider` exercises the whole
 pipeline without any network calls.
+
+## Repo analysis (`analyze.py`)
+
+`analyze_repo()` is a standalone, no-LLM pass used by `aicr init` to characterize a
+repository: it walks git-tracked files, filters binary/heavy directories, and
+counts files, lines, and characters, detecting languages by extension. From those
+counts it recommends excludes and limits and estimates a full-repo review time via
+`estimate_scan_seconds()` (tokens ≈ chars/4, divided by throughput × concurrency).
+It's deliberately decoupled from the review pipeline — a future `aicr scan` (see
+BACKLOG.md) will reuse it for file discovery and the cost estimate.
+
 
 ## Error isolation
 

@@ -48,9 +48,14 @@ pytest -q                 # tests (no network calls; a FakeProvider is used)
    then shows the "% API usage" bar for your provider automatically.
 4. Register it in `providers/registry.py` (name → class), threading `base_url`
    from config if relevant.
-5. Add tests. Use `httpx.MockTransport` for HTTP behavior (see
+5. If it's a cloud provider needing a key, add its env var to
+   `config.PROVIDER_API_KEY_ENV` (name → env var). `config.py` then reads and
+   reports the right variable, and the missing-key error names it. Local providers
+   (no key) skip this.
+6. Add tests. Use `httpx.MockTransport` for HTTP behavior (see
    `tests/test_providers_http.py`) — never require real network access in CI.
    Any real-API tests must be **opt-in**, skipped unless the relevant key is set.
+
 
 
 ## Adding a new `DiffSource`
@@ -64,6 +69,9 @@ pytest -q                 # tests (no network calls; a FakeProvider is used)
 - Commit incrementally per component; write a clear message.
 - Include tests for new behavior and keep the three gates green.
 - Update `CHANGELOG.md` under "Unreleased".
+- Planning something bigger? Record the design in `BACKLOG.md` (each entry has a
+  stable ID, status, and UTC timestamps) so it stays actionable across versions.
+
 
 ## Releasing
 

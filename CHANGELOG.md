@@ -6,7 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Google Gemini provider** — `provider: gemini` reviews via Gemini's
+  OpenAI-compatible endpoint (default model `gemini-2.0-flash`), reading its key
+  from `GEMINI_API_KEY`. Great free tier for local-first users who still want a
+  capable cloud model. `aicr init` now offers OpenRouter / Gemini / Ollama, each
+  with sensible default models and a key sign-up URL.
+- **Per-provider API-key env vars** — each cloud provider now reads its own key
+  variable (`OPENROUTER_API_KEY`, `GEMINI_API_KEY`); `aicr config` and the
+  missing-key error name the right one for the configured provider.
+- **`aicr reset`** — one command to remove everything aicr added to a repo: the
+  pre-commit hook, `.aicr.yaml`, and the `.aicr/` cache. Confirm-gated (with
+  `--yes` to skip), and it offers to strip the API-key line from `.env` while
+  leaving any other variables intact.
+- **Repo analysis in `aicr init`** — an optional, fast, no-API-call scan that
+  reports file / line / character counts and estimated tokens, detects languages
+  and heavy directories, and recommends excludes and limits tuned to the repo's
+  size. It also prints a rough full-repo scan-time estimate and can apply the
+  recommendations straight into `.aicr.yaml`.
+
+### Added (docs)
+- **BACKLOG.md** — durable, timestamped record of planned work: the full
+  `aicr scan` design, a `--fix` mode, SARIF output, per-path prompt overrides, and
+  more diff sources.
+
 ## [0.3.0] — 2026-07-14
+
 
 ### Added
 - **Live review progress** — `aicr review` now prints a real-time

@@ -12,6 +12,7 @@ import pytest
 from aicr.config import Config
 from aicr.models import DiffFile
 from aicr.providers.base import ProviderError
+from aicr.providers.gemini import GeminiProvider
 from aicr.providers.ollama import OllamaProvider
 from aicr.providers.openrouter import OpenRouterProvider
 from aicr.providers.registry import available_providers, build_provider
@@ -87,7 +88,24 @@ async def test_ollama_reviews_and_needs_no_key() -> None:
     assert await provider.account_usage() is None
 
 
+async def test_gemini_reviews_and_records_usage() -> None:
+    transport = httpx.MockTransport(_chat_response)
+    async with httpx.AsyncClient(transport=transport) as client:
+        provider = GeminiProvider(api_key="k", model="gemini-2.0-flash", client=client)
+        comments = await provider.review(_file(), ["bug"], ["python"])
+    assert len(comments) == 1
+    assert provider.usage.total_tokens == 120
+    # Credit usage isn't exposed via the OpenAI-compat layer.
+    assert await provider.account_usage() is None
+
+
+async def test_gemini_requires_key() -> None:
+    with pytest.raises(ProviderError):
+        GeminiProvider(api_key="", model="gemini-2.0-flash")
+
+
 async def test_ollama_missing_model_is_friendly() -> None:
+
     transport = httpx.MockTransport(lambda req: httpx.Response(404, text="not found"))
     async with httpx.AsyncClient(transport=transport) as client:
         provider = OllamaProvider(model="nope", client=client)
@@ -96,8 +114,16 @@ async def test_ollama_missing_model_is_friendly() -> None:
     assert "ollama pull" in str(exc.value)
 
 
-def test_registry_lists_both_providers() -> None:
-    assert set(available_providers()) == {"openrouter", "ollama"}
+def test_registry_lists_all_providers() -> None:
+    assert set(available_providers()) == {"openrouter", "gemini", "ollama"}
+
+
+def test_registry_builds_gemini() -> None:
+    config = Config(provider="gemini", model="gemini-2.0-flash", api_key="k")
+    provider = build_provider(config)
+    assert isinstance(provider, GeminiProvider)
+    assert provider.model == "gemini-2.0-flash"
+
 
 
 def test_registry_builds_ollama_with_base_url() -> None:
