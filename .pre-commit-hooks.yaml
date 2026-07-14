@@ -1,8 +1,9 @@
 # Manifest so others can use aicr via the pre-commit framework:
 #   repos:
 #     - repo: https://github.com/iammarxg/aicodereview
-#       rev: v0.1.0
+#       rev: v0.2.0
 #       hooks:
+
 #         - id: aicr
 # always_run + pass_filenames: false because aicr reads the staged diff itself
 # via `git diff --cached`, rather than operating on the filenames pre-commit passes.

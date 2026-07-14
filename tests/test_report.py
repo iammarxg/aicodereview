@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from aicr.models import ReviewComment, ReviewResult
+from aicr.models import ReviewComment, ReviewResult, Severity
 from aicr.report import json_renderer
-from aicr.report.cli_renderer import filter_and_group, render
+from aicr.report.cli_renderer import filter_and_group, has_blocking_comment, render
 
 
 def _result(comments: list[ReviewComment], **kw) -> ReviewResult:
@@ -87,3 +87,22 @@ def test_json_renderer_roundtrips() -> None:
     payload = json_renderer.render(_result(comments))
     assert '"file": "a.py"' in payload
     assert '"line": 1' in payload
+
+
+def _one(severity: Severity) -> list[ReviewComment]:
+    return [ReviewComment(file="a.py", line=1, category="bug", severity=severity, comment="c")]
+
+
+
+def test_has_blocking_comment_critical_threshold() -> None:
+    # Threshold "critical": only critical findings block.
+    assert has_blocking_comment(_one("critical"), "critical") is True
+    assert has_blocking_comment(_one("warning"), "critical") is False
+
+
+def test_has_blocking_comment_warning_threshold() -> None:
+    # Threshold "warning": warning and critical block, info does not.
+    assert has_blocking_comment(_one("warning"), "warning") is True
+    assert has_blocking_comment(_one("info"), "warning") is False
+
+

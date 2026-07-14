@@ -39,12 +39,19 @@ pytest -q                 # tests (no network calls; a FakeProvider is used)
 ## Adding a new `LLMProvider`
 
 1. Create `src/aicr/providers/yourprovider.py` with a class subclassing
-   `LLMProvider` and implementing `async def review(...)`.
+   `LLMProvider` and implementing `async def review(...)`. Call `super().__init__()`
+   so token accounting is set up. See `openrouter.py` / `ollama.py` as models.
 2. Reuse `parse_comments()` from `providers/base.py` for response validation and
    line-mapping — don't reinvent it.
-3. Register it in `providers/registry.py` (name → class).
-4. Add tests in `tests/test_providers.py`. Real-API tests must be **opt-in**,
-   skipped unless the relevant key is set — never require network access in CI.
+3. Report usage where you can: call `_record_usage(...)` per API call, and
+   override `account_usage()` if the provider exposes spend/limit — the renderer
+   then shows the "% API usage" bar for your provider automatically.
+4. Register it in `providers/registry.py` (name → class), threading `base_url`
+   from config if relevant.
+5. Add tests. Use `httpx.MockTransport` for HTTP behavior (see
+   `tests/test_providers_http.py`) — never require real network access in CI.
+   Any real-API tests must be **opt-in**, skipped unless the relevant key is set.
+
 
 ## Adding a new `DiffSource`
 

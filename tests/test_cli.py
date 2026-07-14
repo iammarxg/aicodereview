@@ -67,7 +67,8 @@ def test_review_nothing_staged(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     result = CliRunner().invoke(cli, ["review"])
     assert result.exit_code == 0
-    assert "Nothing staged" in result.output
+    assert "Nothing to review" in result.output
+
 
 
 def test_review_missing_key_does_not_block(tmp_path: Path, monkeypatch) -> None:
@@ -139,5 +140,59 @@ def test_review_include_forces_excluded_file(tmp_path: Path, monkeypatch) -> Non
     # Without --include, the only staged file is excluded → nothing to review.
     result = CliRunner().invoke(cli, ["review"])
     assert result.exit_code == 0
-    assert "Nothing staged" in result.output
+    assert "Nothing to review" in result.output
+
+
+def test_help_lists_init() -> None:
+    result = CliRunner().invoke(cli, ["--help"])
+    assert result.exit_code == 0
+    assert "init" in result.output
+
+
+def test_review_unstaged_and_range_are_mutually_exclusive(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    result = CliRunner().invoke(cli, ["review", "--unstaged", "--range", "a..b"])
+    assert result.exit_code == 0  # warn-only, never blocks
+    assert "only one of" in result.output
+
+
+def test_config_shows_blocking_and_cache(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    (tmp_path / ".aicr.yaml").write_text(
+        "severity_block_threshold: critical\ncache_enabled: false\n"
+    )
+    result = CliRunner().invoke(cli, ["config"])
+    assert result.exit_code == 0
+    assert "blocking:   critical" in result.output
+    assert "cache:      off" in result.output
+
+
+def test_init_writes_config_for_ollama(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # Answer the wizard: provider=2 (ollama), base_url default, model default,
+    # categories default, blocking? no, install hook? no.
+    answers = "2\n\n\n\nn\nn\n"
+    result = CliRunner().invoke(cli, ["init"], input=answers)
+    assert result.exit_code == 0
+    config_text = (tmp_path / ".aicr.yaml").read_text()
+    assert "provider: ollama" in config_text
+    assert "base_url:" in config_text
+
+
+def test_init_writes_key_to_env_for_openrouter(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # provider=1 (openrouter), model default, enter key? yes, key value,
+    # categories default, blocking? no, install hook? no.
+    answers = "1\n\ny\nsk-secret\n\nn\nn\n"
+    result = CliRunner().invoke(cli, ["init"], input=answers)
+    assert result.exit_code == 0
+    assert "provider: openrouter" in (tmp_path / ".aicr.yaml").read_text()
+    env_text = (tmp_path / ".env").read_text()
+    assert "OPENROUTER_API_KEY=sk-secret" in env_text
+
 

@@ -63,3 +63,38 @@ def test_config_found_in_parent_dir(tmp_path: Path, monkeypatch) -> None:
     sub.mkdir(parents=True)
     config = load_config(cwd=sub, load_env=False)
     assert config.model == "parent/model"
+
+
+def test_ollama_provider_needs_no_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    (tmp_path / ".aicr.yaml").write_text("provider: ollama\nmodel: llama3.1\n", encoding="utf-8")
+    # Should NOT raise despite the missing key — local provider.
+    config = load_config(cwd=tmp_path, load_env=False)
+    assert config.provider == "ollama"
+    assert config.requires_api_key() is False
+
+
+def test_invalid_display_threshold_raises(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    (tmp_path / ".aicr.yaml").write_text(
+        "severity_display_threshold: loud\n", encoding="utf-8"
+    )
+    with pytest.raises(ConfigError):
+        load_config(cwd=tmp_path, load_env=False)
+
+
+def test_invalid_block_threshold_raises(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    (tmp_path / ".aicr.yaml").write_text(
+        "severity_block_threshold: fatal\n", encoding="utf-8"
+    )
+    with pytest.raises(ConfigError):
+        load_config(cwd=tmp_path, load_env=False)
+
+
+def test_block_threshold_defaults_off(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    config = load_config(cwd=tmp_path, load_env=False)
+    assert config.severity_block_threshold is None
+    assert config.cache_enabled is True
+

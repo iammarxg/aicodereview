@@ -43,9 +43,12 @@ class DiffSource(ABC):
     def get_diff_files(self) -> list[DiffFile]: ...
 ```
 
-- `LocalGitSource` — v1, runs `git diff --cached`.
+- `LocalGitSource` — runs `git diff` in one of three `DiffMode`s: `STAGED`
+  (`--cached`, the pre-commit default), `UNSTAGED` (working tree), or `RANGE`
+  (e.g. `main..HEAD`, to review a branch before pushing).
 - `GitHubPRSource` — v2 (not built), would fetch a PR diff via the GitHub API.
   The parser, prompt builder, provider, and renderer downstream **do not change**.
+
 
 ### `LLMProvider` (`providers/base.py`)
 
@@ -57,15 +60,32 @@ class LLMProvider(ABC):
     ) -> list[ReviewComment]: ...
 ```
 
-- `OpenRouterProvider` — the only v1 implementation.
-- `registry.py` maps the config string `provider: openrouter` → the class, so
-  switching providers (once more exist) is a one-line config change.
+- `OpenRouterProvider` (cloud) and `OllamaProvider` (fully local, no key, no
+  network egress) are the two built-in implementations. Both talk to an
+  OpenAI-compatible `/chat/completions` endpoint, so they share the parsing and
+  usage-extraction shape.
+- `registry.py` maps the config string `provider: openrouter|ollama` → the
+  class (threading `base_url` when set), so switching providers is a one-line
+  config change.
 - `parse_comments()` (in `providers/base.py`) is shared, provider-agnostic
   response handling: it extracts JSON from the raw model text (tolerating
   markdown fences / surrounding prose), validates each item against
   `ReviewComment`, drops individually malformed items, and — critically —
   **drops any comment whose line isn't an actually-changed line** in that file.
   This is the safety net that keeps output line-mapped and on-topic.
+
+### Usage accounting is a provider-agnostic seam
+
+`LLMProvider` also owns usage reporting so the renderer never learns provider
+specifics:
+
+- `_record_usage(...)` accumulates per-call `TokenUsage`; providers call it with
+  whatever their response's `usage` block contains.
+- `account_usage()` (default `None`) returns an `AccountUsage` (spend + limit)
+  when a provider can — OpenRouter queries its `/key` endpoint. The renderer
+  turns that into the mini **"% API usage" bar**. Any future provider that
+  supports it gets the bar for free by overriding this one method.
+
 
 ## The models are the contract (`models.py`)
 

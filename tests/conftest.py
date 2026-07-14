@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aicr.models import Category, DiffFile, ReviewComment
+from aicr.models import AccountUsage, Category, DiffFile, ReviewComment
 from aicr.providers.base import LLMProvider
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sample_diffs"
@@ -36,9 +36,18 @@ class FakeProvider(LLMProvider):
 
     name = "fake"
 
-    def __init__(self, comments_by_path: dict[str, list[ReviewComment]] | None = None) -> None:
+    def __init__(
+        self,
+        comments_by_path: dict[str, list[ReviewComment]] | None = None,
+        *,
+        account_usage: AccountUsage | None = None,
+        tokens_per_call: int = 0,
+    ) -> None:
+        super().__init__()
         self.comments_by_path = comments_by_path or {}
         self.calls: list[str] = []
+        self._account_usage = account_usage
+        self._tokens_per_call = tokens_per_call
 
     async def review(
         self,
@@ -47,7 +56,15 @@ class FakeProvider(LLMProvider):
         languages: list[str],
     ) -> list[ReviewComment]:
         self.calls.append(diff_file.path)
+        if self._tokens_per_call:
+            self._record_usage(
+                prompt_tokens=self._tokens_per_call,
+                completion_tokens=self._tokens_per_call,
+            )
         return self.comments_by_path.get(diff_file.path, [])
+
+    async def account_usage(self) -> AccountUsage | None:
+        return self._account_usage
 
 
 @pytest.fixture

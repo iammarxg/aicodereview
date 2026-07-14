@@ -5,6 +5,10 @@ Two distinct retry layers, kept separate on purpose (review §3):
   2. Content-level: one re-ask with a stricter system prompt if the response
      isn't valid JSON (plan §7).
 No OpenRouter-specific detail leaks upward — callers only see ``ReviewComment``.
+
+Usage: token counts from each response's ``usage`` block are recorded via the
+shared ``_record_usage``; ``account_usage`` queries OpenRouter's ``/key``
+endpoint for credit spend/limit so the renderer can show a "% API usage" bar.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from aicr.models import Category, DiffFile, ReviewComment
+from aicr.models import AccountUsage, Category, DiffFile, ReviewComment
 from aicr.prompts.builder import (
     build_retry_system_prompt,
     build_system_prompt,
@@ -30,7 +34,7 @@ from aicr.providers.base import (
     parse_comments,
 )
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 class _RetryableHTTP(Exception):
@@ -47,13 +51,16 @@ class OpenRouterProvider(LLMProvider):
         api_key: str,
         model: str,
         *,
+        base_url: str = OPENROUTER_BASE_URL,
         timeout: float = 60.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        super().__init__()
         if not api_key:
             raise ProviderError("OpenRouter API key is required.")
         self.api_key = api_key
         self.model = model
+        self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._client = client  # injectable for tests
 
@@ -76,7 +83,7 @@ class OpenRouterProvider(LLMProvider):
         """One chat completion call, with transport-level backoff on 429/5xx."""
         try:
             response = await client.post(
-                OPENROUTER_URL,
+                f"{self.base_url}/chat/completions",
                 headers=self._headers(),
                 json={"model": self.model, "messages": messages, "temperature": 0},
                 timeout=self.timeout,
@@ -92,10 +99,24 @@ class OpenRouterProvider(LLMProvider):
             )
 
         data = response.json()
+        self._record_response_usage(data)
         try:
             return str(data["choices"][0]["message"]["content"])
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"Unexpected OpenRouter response shape: {data}") from exc
+
+    def _record_response_usage(self, data: object) -> None:
+        """Pull the ``usage`` block (OpenAI-compatible) into the running total."""
+        if not isinstance(data, dict):
+            return
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return
+        self._record_usage(
+            prompt_tokens=int(usage.get("prompt_tokens") or 0),
+            completion_tokens=int(usage.get("completion_tokens") or 0),
+            total_tokens=int(usage.get("total_tokens") or 0),
+        )
 
     async def review(
         self,
@@ -125,6 +146,35 @@ class OpenRouterProvider(LLMProvider):
                 except MalformedResponseError:
                     # Give up on this file only; caller counts it as an error.
                     raise
+        finally:
+            if owns_client:
+                await client.aclose()
+
+    async def account_usage(self) -> AccountUsage | None:
+        """Query OpenRouter's ``/key`` endpoint for credit usage/limit.
+
+        Returns ``None`` on any failure — usage display is best-effort and must
+        never break or block a review.
+        """
+        owns_client = self._client is None
+        client = self._client or httpx.AsyncClient()
+        try:
+            response = await client.get(
+                f"{self.base_url}/key",
+                headers=self._headers(),
+                timeout=self.timeout,
+            )
+            if response.status_code != 200:
+                return None
+            data = response.json().get("data")
+            if not isinstance(data, dict):
+                return None
+            used = float(data.get("usage") or 0.0)
+            raw_limit = data.get("limit")
+            limit = float(raw_limit) if raw_limit is not None else None
+            return AccountUsage(used=used, limit=limit, label="credits ($)")
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return None
         finally:
             if owns_client:
                 await client.aclose()

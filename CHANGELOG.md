@@ -6,7 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Added
+- **`aicr init`** — an interactive, rclone-style setup wizard: pick a provider,
+  enter/store your key in `.env`, choose categories and blocking, and optionally
+  install the hook, all from numbered prompts.
+
+- **Ollama provider** — fully local, private review via a model on `localhost`
+  (no API key, no data leaves your machine). A second `LLMProvider`
+  implementation proving the adapter pattern; select it with `provider: ollama`.
+- **Token & cost usage display** — providers now report `TokenUsage`, aggregated
+  per run and shown as a token line plus a mini **"% API usage" progress bar**
+  (from OpenRouter's `/key` credit endpoint). Usage is a provider-agnostic
+  interface (`_record_usage` + `account_usage`), so any future provider that
+  supports it gets the bar for free.
+- **Diff-range & unstaged review** — `aicr review --unstaged` reviews
+  working-tree changes and `--range main..HEAD` reviews a commit range (e.g. a
+  branch before pushing), not just the staged index.
+- **Blocking mode (opt-in)** — `--strict` (or `severity_block_threshold` in
+  config) makes `review` exit non-zero on findings at/above a severity, turning
+  aicr into a real gate. Default stays warn-only (exit 0).
+- **Hunk-level cache** — unchanged files are served from `.aicr/cache/` instead
+  of re-calling the provider across amended/re-staged commits; disable per run
+  with `--no-cache` or via `cache_enabled: false`.
+
+### Fixed
+- `review --staged` was a no-op flag that could never be disabled; diff-source
+  selection is now explicit (staged / unstaged / range).
+- `severity_display_threshold` (and the new `severity_block_threshold`) are now
+  validated, so a typo raises a friendly error instead of silently misbehaving.
+
 ## [0.1.0] — Initial release
+
 
 ### Added
 - Distributed as `aicr-review` on PyPI (the `ai-code-review` name belongs to an
@@ -44,5 +76,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Test suite with a `FakeProvider` — no network calls required.
   `ruff`, `mypy --strict`, and `pytest` all green.
 
-[Unreleased]: https://github.com/iammarxg/aicodereview/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/iammarxg/aicodereview/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/iammarxg/aicodereview/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/iammarxg/aicodereview/releases/tag/v0.1.0
+

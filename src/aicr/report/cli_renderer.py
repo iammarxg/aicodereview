@@ -1,14 +1,15 @@
 """Colored, grouped-by-file terminal output for a ``ReviewResult``.
 
-Formatting logic (grouping, ordering, summary text) is kept separate from color
-application so it can be tested independent of ANSI codes (plan §10).
+Formatting logic (grouping, ordering, summary text, the usage bar, and the
+block decision) is kept separate from color application so it can be tested
+independent of ANSI codes (plan §10).
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-from aicr.models import ReviewComment, ReviewResult, Severity
+from aicr.models import AccountUsage, ReviewComment, ReviewResult, Severity
 
 # Severity ordering for sorting (most serious first) and threshold filtering.
 SEVERITY_RANK: dict[Severity, int] = {"critical": 0, "warning": 1, "info": 2}
@@ -28,6 +29,8 @@ _SEVERITY_LABEL: dict[Severity, str] = {
     "info": "INFO",
 }
 
+_BAR_WIDTH = 10  # cells in the mini usage bar
+
 
 def _colorize(text: str, code: str, use_color: bool) -> str:
     return f"{code}{text}{_RESET}" if use_color else text
@@ -38,6 +41,16 @@ def _threshold_rank(threshold: str) -> int:
         if severity == threshold:
             return rank
     return SEVERITY_RANK["info"]
+
+
+def has_blocking_comment(comments: list[ReviewComment], threshold: Severity) -> bool:
+    """True if any comment is at or above ``threshold`` (for blocking mode).
+
+    Pure logic, no color/exit handling — the CLI turns this into an exit code so
+    the decision itself stays unit-testable.
+    """
+    limit = SEVERITY_RANK[threshold]
+    return any(SEVERITY_RANK[c.severity] <= limit for c in comments)
 
 
 def filter_and_group(
@@ -63,6 +76,8 @@ def filter_and_group(
 def format_summary_line(result: ReviewResult) -> str:
     """One-line summary of skips and counts, independent of color."""
     parts = [f"{result.files_reviewed} file(s) reviewed"]
+    if result.cached:
+        parts.append(f"{result.cached} from cache")
     if result.skipped_binary:
         parts.append(f"{result.skipped_binary} binary skipped")
     if result.skipped_too_large:
@@ -70,6 +85,32 @@ def format_summary_line(result: ReviewResult) -> str:
     if result.skipped_errors:
         parts.append(f"{result.skipped_errors} errored")
     return ", ".join(parts)
+
+
+def format_usage_bar(usage: AccountUsage, *, width: int = _BAR_WIDTH) -> str:
+    """Render account credit consumption as a mini progress bar.
+
+    With a known limit: ``[████░░░░░░] 42% · 0.42/1.00 credits ($)``.
+    Without a limit: ``0.42 credits ($) used`` (no percentage possible).
+    """
+    percent = usage.percent
+    if percent is None:
+        return f"{usage.used:g} {usage.label} used"
+    filled = int(round((percent / 100.0) * width))
+    filled = max(0, min(width, filled))
+    bar = "█" * filled + "░" * (width - filled)
+    return f"[{bar}] {percent:.0f}% · {usage.used:g}/{usage.limit:g} {usage.label}"
+
+
+def format_tokens(result: ReviewResult) -> str | None:
+    """One-line token summary, or None if the provider reported no usage."""
+    usage = result.token_usage
+    if usage.is_empty:
+        return None
+    return (
+        f"~{usage.total_tokens} tokens "
+        f"({usage.prompt_tokens} in / {usage.completion_tokens} out)"
+    )
 
 
 def render(result: ReviewResult, *, use_color: bool = True, display_threshold: str = "info") -> str:
@@ -101,4 +142,13 @@ def render(result: ReviewResult, *, use_color: bool = True, display_threshold: s
     footer = f"{total} comment(s) · " + format_summary_line(result)
     footer += f" · {result.duration_seconds:.1f}s"
     lines.append(_colorize(footer, _DIM, use_color))
+
+    tokens = format_tokens(result)
+    if tokens:
+        lines.append(_colorize(tokens, _DIM, use_color))
+    if result.account_usage is not None:
+        bar = "API usage: " + format_usage_bar(result.account_usage)
+        lines.append(_colorize(bar, _DIM, use_color))
+
     return "\n".join(lines)
+

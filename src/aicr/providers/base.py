@@ -4,6 +4,11 @@ The interface is async so multi-file reviews can run concurrently
 (``asyncio.gather``) with the event loop owned by the CLI (review §2.1).
 Response parsing and the out-of-range line drop (review §2.3) live here so every
 provider gets correct, safe behavior for free.
+
+Usage accounting is also shared here: providers call ``_record_usage`` per API
+call to accumulate ``TokenUsage``, and may override ``account_usage`` to report
+account-level credit consumption. Both are provider-agnostic — the engine and
+renderer read them without knowing which provider produced them.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from abc import ABC, abstractmethod
 
 from pydantic import ValidationError
 
-from aicr.models import Category, DiffFile, ReviewComment
+from aicr.models import AccountUsage, Category, DiffFile, ReviewComment, TokenUsage
 
 
 class ProviderError(Exception):
@@ -87,6 +92,32 @@ class LLMProvider(ABC):
 
     name: str = "base"
 
+    def __init__(self) -> None:
+        # Per-run token accounting, accumulated across every API call this
+        # provider instance makes. The engine reads ``.usage`` when done.
+        self.usage = TokenUsage()
+
+    def _record_usage(
+        self,
+        *,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+    ) -> None:
+        """Add one API call's token counts to this provider's running total.
+
+        Providers extract these numbers from their own response shape (e.g.
+        OpenRouter/OpenAI ``usage``) and call this — keeping the accumulation
+        logic in one shared place regardless of provider.
+        """
+        self.usage.add(
+            TokenUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            )
+        )
+
     @abstractmethod
     async def review(
         self,
@@ -102,3 +133,11 @@ class LLMProvider(ABC):
         """
         ...
 
+    async def account_usage(self) -> AccountUsage | None:
+        """Return account-level credit usage/limit, if the provider exposes it.
+
+        Default: ``None`` (unknown). Providers that can report spend/limit (e.g.
+        OpenRouter's ``/api/v1/key`` endpoint) override this so the renderer can
+        show a "% API usage" bar. Must never raise — return ``None`` on failure.
+        """
+        return None

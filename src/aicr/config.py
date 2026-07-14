@@ -14,7 +14,7 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 
-from aicr.models import Category, normalize_category
+from aicr.models import Category, Severity, normalize_category
 
 # `openrouter/free` is a virtual router that load-balances across OpenRouter's
 # free models, which greatly reduces 429 rate-limit failures for new users with a
@@ -23,6 +23,13 @@ DEFAULT_MODEL = "openrouter/free"
 
 DEFAULT_CATEGORIES = ["bugs", "security", "readability", "style"]
 CONFIG_FILENAME = ".aicr.yaml"
+
+# Valid severities, in ascending order (used to validate threshold settings).
+_SEVERITIES: tuple[Severity, ...] = ("info", "warning", "critical")
+
+# Providers that talk to a remote API and therefore need OPENROUTER_API_KEY.
+# Local providers (e.g. Ollama) run without a key.
+_PROVIDERS_REQUIRING_KEY = {"openrouter"}
 
 
 class ConfigError(Exception):
@@ -34,6 +41,8 @@ class Config(BaseModel):
 
     provider: str = "openrouter"
     model: str = DEFAULT_MODEL
+    # Override the provider's API endpoint (e.g. a local Ollama URL or a proxy).
+    base_url: str | None = None
     categories: list[Category] = Field(
         default_factory=lambda: [normalize_category(c) for c in DEFAULT_CATEGORIES]
     )
@@ -42,7 +51,13 @@ class Config(BaseModel):
     max_diff_lines_per_file: int = 800
     max_files_per_review: int = 50
     concurrency: int = 5
-    severity_display_threshold: str = "info"
+    severity_display_threshold: Severity = "info"
+    # Blocking mode (opt-in). None = never block (warn-only default, plan §8).
+    # When set (e.g. "critical"), a comment at/above this severity makes `aicr
+    # review` exit non-zero, which aborts the commit from the pre-commit hook.
+    severity_block_threshold: Severity | None = None
+    # Hunk-level result cache (skip re-reviewing unchanged files across commits).
+    cache_enabled: bool = True
 
     # Not persisted to YAML — sourced from the environment only.
     api_key: str | None = None
@@ -53,6 +68,23 @@ class Config(BaseModel):
         if isinstance(value, list):
             return [normalize_category(str(v)) for v in value]
         return value
+
+    @field_validator("severity_display_threshold", "severity_block_threshold", mode="before")
+    @classmethod
+    def _validate_severity(cls, value: object) -> object:
+        """Reject typos in severity thresholds instead of silently misbehaving."""
+        if value is None:
+            return value
+        text = str(value).strip().lower()
+        if text not in _SEVERITIES:
+            raise ValueError(
+                f"Invalid severity {value!r}. Valid: {', '.join(_SEVERITIES)}."
+            )
+        return text
+
+    def requires_api_key(self) -> bool:
+        """True if the configured provider needs ``OPENROUTER_API_KEY``."""
+        return self.provider in _PROVIDERS_REQUIRING_KEY
 
 
 def _find_config_file(start: Path) -> Path | None:
@@ -74,8 +106,9 @@ def load_config(
 
     Args:
         cwd: Directory to start searching from (defaults to the process cwd).
-        require_api_key: If True, raise a friendly ``ConfigError`` when the key is
-            missing — this happens *before* any network call (plan §6/§8).
+        require_api_key: If True *and the provider needs one*, raise a friendly
+            ``ConfigError`` when the key is missing — before any network call
+            (plan §6/§8). Local providers (Ollama) never require a key.
         load_env: If True, load a local ``.env`` file into the environment first.
 
     Raises:
@@ -106,11 +139,12 @@ def load_config(
 
     config.api_key = os.environ.get("OPENROUTER_API_KEY")
 
-    if require_api_key and not config.api_key:
+    if require_api_key and config.requires_api_key() and not config.api_key:
         raise ConfigError(
             "OPENROUTER_API_KEY is not set.\n"
             "  1. Copy .env.example to .env\n"
             "  2. Add your key from https://openrouter.ai/keys\n"
-            "  (or export OPENROUTER_API_KEY in your shell)"
+            "  (or export OPENROUTER_API_KEY in your shell)\n"
+            "  Tip: run `aicr init`, or use a local provider with `provider: ollama`."
         )
     return config

@@ -1,20 +1,36 @@
 """Map a provider name (from config) to a concrete ``LLMProvider`` class.
 
-Adding a new provider later (OpenAI direct, Anthropic direct, Ollama) is purely
+Adding a new provider later (OpenAI direct, Anthropic direct, ...) is purely
 additive: implement ``LLMProvider`` and register it here. Nothing else changes.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from aicr.config import Config
 from aicr.providers.base import LLMProvider, ProviderError
+from aicr.providers.ollama import OllamaProvider
 from aicr.providers.openrouter import OpenRouterProvider
 
-_FACTORIES = {
-    "openrouter": lambda config: OpenRouterProvider(
-        api_key=config.api_key or "",
-        model=config.model,
-    ),
+
+def _build_openrouter(config: Config) -> LLMProvider:
+    kwargs: dict[str, object] = {"api_key": config.api_key or "", "model": config.model}
+    if config.base_url:
+        kwargs["base_url"] = config.base_url
+    return OpenRouterProvider(**kwargs)  # type: ignore[arg-type]
+
+
+def _build_ollama(config: Config) -> LLMProvider:
+    kwargs: dict[str, object] = {"model": config.model}
+    if config.base_url:
+        kwargs["base_url"] = config.base_url
+    return OllamaProvider(**kwargs)  # type: ignore[arg-type]
+
+
+_FACTORIES: dict[str, Callable[[Config], LLMProvider]] = {
+    "openrouter": _build_openrouter,
+    "ollama": _build_ollama,
 }
 
 

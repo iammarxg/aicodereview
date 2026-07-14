@@ -2,19 +2,21 @@
 
 Local-first AI code review that reviews your **staged git diff before you commit**.
 It reads `git diff --cached`, sends only the changed lines to an LLM (via
-[OpenRouter](https://openrouter.ai)), and prints inline, line-mapped comments —
-bugs, security risks, readability issues, and style suggestions — right in the
-terminal where you ran `git commit`.
+[OpenRouter](https://openrouter.ai) or a local [Ollama](https://ollama.com)
+model), and prints inline, line-mapped comments — bugs, security risks,
+readability issues, and style suggestions — right in the terminal where you ran
+`git commit`.
 
 - **Local-first** — runs on your machine as a git pre-commit hook.
-- **Warn-only** — flags issues but *never blocks* your commit (v1).
+- **Warn-only** — flags issues but *never blocks* your commit (unless you opt in).
 - **Line-mapped** — every comment is tied to a real added/modified line.
-- **Provider-agnostic** — OpenRouter today; the adapter interface is built so
-  OpenAI, Anthropic, or a local model can be added later without touching the
+- **Provider-agnostic** — OpenRouter (cloud) and Ollama (local) today; the
+  adapter interface lets you add OpenAI, Anthropic, etc. without touching the
   review pipeline (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 
-> ⚠️ **Data flow:** this tool sends your staged code diffs to a third-party API
-> (OpenRouter). Understand and accept that before using it on private/work code.
+> ⚠️ **Data flow:** with a cloud provider this tool sends your staged code diffs
+> to a third-party API (OpenRouter). Prefer **`provider: ollama`** for fully
+> local review where nothing leaves your machine.
 
 ---
 
@@ -25,29 +27,27 @@ terminal where you ran `git commit`.
 pip install "git+https://github.com/iammarxg/aicodereview.git"
 # or, from a local checkout:  pip install .
 
-# 2. Set your OpenRouter API key (never stored in a committed file)
-cp .env.example .env                      # then edit .env, or:
-export OPENROUTER_API_KEY="sk-or-..."     # https://openrouter.ai/keys
-
-# 3. Enable the git hook in your repo
+# 2. Interactive setup — pick a provider, store your key, install the hook
 cd /path/to/your/repo
-aicr enable
+aicr init
 
-# 4. Just commit — the review runs automatically
+# 3. Just commit — the review runs automatically
 git add .
 git commit -m "your change"
 ```
 
-The default model is `openrouter/free` — a virtual router that load-balances
-across OpenRouter's free models, so a fresh key works out of the box with far
-fewer rate-limit errors. Override it per-repo in `.aicr.yaml` or per-run with
-`aicr review --model anthropic/claude-3.5-sonnet`.
+`aicr init` is an rclone-style wizard: it asks which provider you want, saves
+your OpenRouter key to a gitignored `.env` (never to `.aicr.yaml`), lets you pick
+categories and blocking behavior, and offers to install the pre-commit hook.
+Prefer to do it by hand? Set `OPENROUTER_API_KEY`, write a `.aicr.yaml`, and run
+`aicr enable`.
 
-You can also run a review manually without committing:
+You can also run a review manually, without committing:
 
 ```bash
-git add .
-aicr review                 # colored terminal report
+aicr review                 # staged changes, colored report
+aicr review --unstaged      # working-tree changes not yet staged
+aicr review --range main..HEAD   # a whole branch before you push
 aicr review --format json   # machine-readable (for CI/editors later)
 ```
 
@@ -62,19 +62,54 @@ calc.py
   [INFO] L4 (readability) Consider a docstring describing the return value.
 
 1 file(s) reviewed · 2 comment(s) · 1.3s
+~1240 tokens (980 in / 260 out)
+API usage: [████░░░░░░] 42% · 0.42/1.00 credits ($)
 ```
+
+The token line and **"% API usage" bar** appear whenever the provider reports
+usage (OpenRouter does; local Ollama has no billing).
+
+## Providers
+
+| Provider | Where it runs | API key | Select with |
+|---|---|---|---|
+| `openrouter` | Cloud, hundreds of models | required | `provider: openrouter` (default) |
+| `ollama` | **Local**, private | none | `provider: ollama` + `model: llama3.1` |
+
+For Ollama: install it, `ollama pull llama3.1`, then set `provider: ollama` in
+`.aicr.yaml` (optionally `base_url` if not on the default `localhost:11434`).
 
 ## Commands
 
 | Command | Description |
 |---|---|
-| `aicr review [--staged] [--format cli\|json] [--category ...] [--model ...] [--include ...]` | Review staged changes. Always exits 0 (warn-only). |
+| `aicr init` | Interactive setup wizard (provider, key, categories, hook). |
+| `aicr review [--unstaged\|--range A..B] [--strict] [--no-cache] [--format cli\|json] [--category ...] [--model ...] [--include ...]` | Review changes. Warn-only (exit 0) unless `--strict`. |
 | `aicr enable [--force]` | Install `.git/hooks/pre-commit` in the current repo. |
 | `aicr disable` | Remove the aicr pre-commit hook. |
 | `aicr config` | Show the resolved configuration (never prints the API key). |
 
 `install-hook` / `uninstall-hook` remain as hidden aliases for `enable` /
 `disable`. Bypass a single commit: `AICR_SKIP=1 git commit -m "..."`.
+
+### Blocking mode (opt-in)
+
+By default aicr never blocks a commit. To turn it into a gate, pass `--strict`
+(blocks on `critical` findings) or set a threshold in config:
+
+```yaml
+severity_block_threshold: critical   # or "warning"
+```
+
+When a finding meets the threshold, `aicr review` exits non-zero, which aborts
+the commit from the pre-commit hook. `AICR_SKIP=1` still bypasses it.
+
+### Faster re-runs — the hunk cache
+
+Files whose changed lines haven't moved since a previous run are served from a
+local cache (`.aicr/cache/`, gitignored) instead of re-calling the provider —
+handy for the "commit, fix, recommit" loop. Disable with `--no-cache` or
+`cache_enabled: false`.
 
 ### Reviewing a normally-excluded file
 
@@ -93,14 +128,17 @@ Committable, human-editable, per-repo settings. The API key is **never** stored
 here — only read from `OPENROUTER_API_KEY` (env or `.env`).
 
 ```yaml
-provider: openrouter
-model: openrouter/free        # auto-routes across free models; any OpenRouter model works
+provider: openrouter          # or: ollama
+model: openrouter/free        # any OpenRouter model, or a pulled Ollama model
+# base_url: http://localhost:11434/v1   # override provider endpoint (e.g. Ollama)
 categories: [bugs, security, readability, style]
 languages: []                 # empty = auto-detect per file by extension
 exclude_paths: ["*.lock", "dist/**", "node_modules/**", "*.md"]
 max_diff_lines_per_file: 800  # skip files with more added lines than this
 concurrency: 5                # max simultaneous provider requests
+cache_enabled: true           # reuse results for unchanged files across runs
 severity_display_threshold: info
+# severity_block_threshold: critical    # uncomment to block commits (opt-in)
 ```
 
 ## Using the `pre-commit` framework instead
@@ -111,15 +149,16 @@ If your repo already uses [pre-commit](https://pre-commit.com), add to your
 ```yaml
 repos:
   - repo: https://github.com/iammarxg/aicodereview
-    rev: v0.1.0
+    rev: v0.2.0
     hooks:
       - id: aicr
 ```
 
+
 ## Requirements
 
 - Python 3.11+
-- An OpenRouter API key
+- An OpenRouter API key (or a local Ollama install)
 - `git` on your PATH
 
 ## License

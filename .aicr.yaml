@@ -37,3 +37,6 @@ max_diff_lines_per_file: 800         # skip files with more added lines than thi
 max_files_per_review: 50             # cap concurrent LLM calls per commit
 concurrency: 5                       # max simultaneous provider requests
 severity_display_threshold: info     # show info, warning, critical (everything)
+cache_enabled: true                  # reuse results for unchanged files across runs
+# severity_block_threshold: critical # uncomment to block commits on critical findings
+

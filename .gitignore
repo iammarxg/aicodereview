@@ -21,8 +21,9 @@ env/
 .coverage
 htmlcov/
 
-# aicr runtime
-.aicr/cache/
+# aicr runtime (review cache lives here)
+.aicr/
+
 
 # OS / editor
 .DS_Store

@@ -45,6 +45,53 @@ class ReviewComment(BaseModel):
     suggestion: str | None = None
 
 
+class TokenUsage(BaseModel):
+    """Token counts reported by a provider, aggregated across a review run.
+
+    Provider-agnostic: any provider that surfaces token counts records them here
+    via ``LLMProvider._record_usage`` (see ``providers/base.py``). Providers that
+    don't report usage simply leave this at zero.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+    def add(self, other: TokenUsage) -> None:
+        """Accumulate another call's usage into this one (in place)."""
+        self.prompt_tokens += other.prompt_tokens
+        self.completion_tokens += other.completion_tokens
+        # Fall back to the sum if the provider didn't send a total.
+        self.total_tokens += other.total_tokens or (
+            other.prompt_tokens + other.completion_tokens
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.prompt_tokens or self.completion_tokens or self.total_tokens)
+
+
+class AccountUsage(BaseModel):
+    """Account-level credit usage/limit, when a provider exposes it.
+
+    ``limit is None`` means "no cap / unlimited / unknown" — the renderer then
+    shows the raw used amount instead of a percentage bar. This model is the
+    provider-agnostic seam for the "% API usage" display: any provider that can
+    report a spend/limit implements ``LLMProvider.account_usage`` to return one.
+    """
+
+    used: float = 0.0
+    limit: float | None = None
+    label: str = "credits"
+
+    @property
+    def percent(self) -> float | None:
+        """Fraction of the limit consumed (0–100), or None if there's no limit."""
+        if self.limit is None or self.limit <= 0:
+            return None
+        return max(0.0, min(100.0, (self.used / self.limit) * 100.0))
+
+
 class DiffLine(BaseModel):
     """One line inside a hunk, tagged with its origin and new-file number."""
 
@@ -83,6 +130,20 @@ class DiffFile(BaseModel):
     def added_line_count(self) -> int:
         return len(self.changed_line_numbers())
 
+    def content_signature(self) -> str:
+        """Stable text of the reviewable (added) content, for cache keys.
+
+        Only added lines and their numbers matter — reordering context or
+        touching unrelated files must not invalidate this file's cache entry
+        (see ``cache.py``).
+        """
+        parts: list[str] = [self.path, self.language or ""]
+        for hunk in self.hunks:
+            for ln in hunk.lines:
+                if ln.kind == "added":
+                    parts.append(f"{ln.line_no}:{ln.content}")
+        return "\n".join(parts)
+
     def to_prompt_text(self) -> str:
         """Render hunks for the LLM with real new-file line numbers and +/- markers.
 
@@ -112,3 +173,6 @@ class ReviewResult(BaseModel):
     skipped_binary: int = 0
     skipped_too_large: int = 0
     skipped_errors: int = 0
+    cached: int = 0
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    account_usage: AccountUsage | None = None
