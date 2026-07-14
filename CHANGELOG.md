@@ -6,7 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Live review progress** — `aicr review` now prints a real-time
+  `Reviewing (n/total) <file> …` status to stderr as each file actually starts
+  going to the LLM. It clears itself before the report, so results still appear
+  all at once and `--format json` stays a clean pipe.
+- **`aicr init` writes every option** — the generated `.aicr.yaml` now lists the
+  full configuration surface; options you didn't set are written commented-out at
+  their defaults. A new optional "advanced options" step in the wizard (same
+  prompt style) lets you set languages, excludes, limits, concurrency, display
+  threshold, and cache without hand-editing YAML.
+- **`scripts/release.py`** — one-command release: bump (major/minor/patch or an
+  exact `--version`), roll the CHANGELOG, commit, create an annotated `vX.Y.Z`
+  tag, and push branch + tag. Policy: features → minor, fixes → patch.
+
 ## [0.2.0]
+
 
 ### Added
 - **`aicr init`** — an interactive, rclone-style setup wizard: pick a provider,

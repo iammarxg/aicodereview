@@ -11,11 +11,18 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 
 from aicr.cache import ReviewCache, make_key
 from aicr.config import Config
 from aicr.models import Category, DiffFile, ReviewComment, ReviewResult
 from aicr.providers.base import LLMProvider, MalformedResponseError, ProviderError
+
+# Called when a file actually starts being reviewed (after acquiring the
+# concurrency semaphore): (path, started_count, total_to_review). Used by the
+# CLI to show a live "Reviewing …" status without altering the final report.
+ProgressCallback = Callable[[str, int, int], None]
+
 
 
 def _reviewable(files: list[DiffFile], max_lines: int) -> tuple[list[DiffFile], int, int]:
@@ -43,14 +50,32 @@ async def _review_one(
     languages: list[str],
     semaphore: asyncio.Semaphore,
     errors: list[str],
+    progress: _ProgressTracker | None,
 ) -> list[ReviewComment]:
     """Review a single file, converting failures into a counted error (never raise)."""
     async with semaphore:
+        # Report *inside* the semaphore so the count reflects work actually
+        # starting (bounded by concurrency), not just being scheduled.
+        if progress is not None:
+            progress.starting(diff_file.path)
         try:
             return await provider.review(diff_file, categories, languages)
         except (ProviderError, MalformedResponseError) as exc:
             errors.append(f"{diff_file.path}: {exc}")
             return []
+
+
+class _ProgressTracker:
+    """Turns per-file start events into monotonic (path, n, total) callbacks."""
+
+    def __init__(self, total: int, callback: ProgressCallback) -> None:
+        self._total = total
+        self._callback = callback
+        self._done = 0
+
+    def starting(self, path: str) -> None:
+        self._done += 1
+        self._callback(path, self._done, self._total)
 
 
 async def run_review(
@@ -59,6 +84,7 @@ async def run_review(
     config: Config,
     *,
     cache: ReviewCache | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> ReviewResult:
     """Run the full review over all changed files, concurrently and safely.
 
@@ -66,7 +92,12 @@ async def run_review(
     ``ReviewResult.skipped_errors`` so one bad response can't block a commit
     (plan §7/§8). Files whose reviewable content is unchanged since a previous
     run are served from ``cache`` (when provided) instead of the provider.
+
+    ``progress_callback`` (optional) is invoked as each file *starts* being sent
+    to the provider — this drives the live "Reviewing …" status. It fires only
+    for cache misses (hits do no work), and never changes the final result.
     """
+
     start = time.perf_counter()
     reviewable, skipped_binary, skipped_too_large = _reviewable(
         files, config.max_diff_lines_per_file
@@ -91,14 +122,22 @@ async def run_review(
         else:
             to_review.append(f)
 
+    tracker = (
+        _ProgressTracker(len(to_review), progress_callback)
+        if progress_callback is not None and to_review
+        else None
+    )
     semaphore = asyncio.Semaphore(config.concurrency)
     errors: list[str] = []
     results = await asyncio.gather(
         *(
-            _review_one(provider, f, config.categories, config.languages, semaphore, errors)
+            _review_one(
+                provider, f, config.categories, config.languages, semaphore, errors, tracker
+            )
             for f in to_review
         )
     )
+
 
     # Record freshly-reviewed files back into the cache (only clean successes).
     errored_paths = {msg.split(":", 1)[0] for msg in errors}

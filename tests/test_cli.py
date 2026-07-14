@@ -173,9 +173,9 @@ def test_config_shows_blocking_and_cache(tmp_path: Path, monkeypatch) -> None:
 def test_init_writes_config_for_ollama(tmp_path: Path, monkeypatch) -> None:
     _init_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
-    # Answer the wizard: provider=2 (ollama), base_url default, model default,
-    # categories default, blocking? no, install hook? no.
-    answers = "2\n\n\n\nn\nn\n"
+    # Wizard: provider=2 (ollama), base_url default, model default,
+    # categories default, blocking? no, advanced? no, install hook? no.
+    answers = "2\n\n\n\nn\nn\nn\n"
     result = CliRunner().invoke(cli, ["init"], input=answers)
     assert result.exit_code == 0
     config_text = (tmp_path / ".aicr.yaml").read_text()
@@ -187,12 +187,60 @@ def test_init_writes_key_to_env_for_openrouter(tmp_path: Path, monkeypatch) -> N
     _init_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     # provider=1 (openrouter), model default, enter key? yes, key value,
-    # categories default, blocking? no, install hook? no.
-    answers = "1\n\ny\nsk-secret\n\nn\nn\n"
+    # categories default, blocking? no, advanced? no, install hook? no.
+    answers = "1\n\ny\nsk-secret\n\nn\nn\nn\n"
     result = CliRunner().invoke(cli, ["init"], input=answers)
     assert result.exit_code == 0
     assert "provider: openrouter" in (tmp_path / ".aicr.yaml").read_text()
     env_text = (tmp_path / ".env").read_text()
     assert "OPENROUTER_API_KEY=sk-secret" in env_text
+
+
+def test_init_writes_all_options_even_when_advanced_skipped(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # provider=1, model default, key? no, categories default, blocking? no,
+    # advanced? no, install hook? no.
+    answers = "1\n\nn\n\nn\nn\nn\n"
+    result = CliRunner().invoke(cli, ["init"], input=answers)
+    assert result.exit_code == 0
+    config_text = (tmp_path / ".aicr.yaml").read_text()
+    # Every option is present, even though advanced was skipped — the ones the
+    # user didn't set are written commented-out at their defaults.
+    for opt in [
+        "provider:",
+        "model:",
+        "categories:",
+        "exclude_paths:",
+        "# base_url:",
+        "# languages:",
+        "# max_diff_lines_per_file:",
+        "# max_files_per_review:",
+        "# concurrency:",
+        "# severity_display_threshold:",
+        "# cache_enabled:",
+        "# severity_block_threshold:",
+    ]:
+        assert opt in config_text, f"missing {opt!r} in generated config"
+
+
+def test_init_advanced_options_written_live(tmp_path: Path, monkeypatch) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # provider=2 (ollama), base_url default, model default, categories default,
+    # blocking? no, advanced? YES, then: languages "python", exclude default,
+    # max_lines 500, max_files 20, concurrency 3, display menu=1 (info),
+    # cache? yes, install hook? no.
+    answers = "2\n\n\n\nn\ny\npython\n\n500\n20\n3\n1\ny\nn\n"
+    result = CliRunner().invoke(cli, ["init"], input=answers)
+    assert result.exit_code == 0
+    config_text = (tmp_path / ".aicr.yaml").read_text()
+    # Advanced values the user set are now live (uncommented).
+    assert 'languages: ["python"]' in config_text
+    assert "max_diff_lines_per_file: 500" in config_text
+    assert "concurrency: 3" in config_text
+
 
 

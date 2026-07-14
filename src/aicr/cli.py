@@ -75,6 +75,36 @@ def _split_patterns(value: str | None) -> list[str]:
     return [item for item in re.split(r"[,\s]+", value.strip()) if item]
 
 
+_PROGRESS_WIDTH = 70
+
+
+class _ProgressPrinter:
+    """Live 'Reviewing …' status line, callable as an engine progress callback.
+
+    The status is written to **stderr** and overwrites itself in place via a
+    carriage return, so it never pollutes stdout (keeping `--format json` clean)
+    or interleaves with the final report. It shows only on an interactive
+    stderr; in pipes/CI it stays silent. ``clear()`` wipes the line before the
+    report prints, so results still appear all at once — the progress is real
+    (it fires as each file actually starts going to the LLM), not a fake spinner.
+    """
+
+    def __init__(self) -> None:
+        self.enabled = sys.stderr.isatty()
+
+    def __call__(self, path: str, done: int, total: int) -> None:
+        if not self.enabled:
+            return
+        msg = f"Reviewing ({done}/{total}) {path} …"
+        click.echo(f"\r{msg:<{_PROGRESS_WIDTH}}"[:_PROGRESS_WIDTH], nl=False, err=True)
+
+    def clear(self) -> None:
+        if self.enabled:
+            click.echo("\r" + " " * _PROGRESS_WIDTH + "\r", nl=False, err=True)
+
+
+
+
 @click.group(epilog=_EPILOG)
 @click.version_option(__version__, prog_name="aicr")
 def cli() -> None:
@@ -157,18 +187,30 @@ def review(
         click.echo("Nothing to review.")
         raise SystemExit(0)
 
+    # A live status is pointless for JSON output (which must stay a clean pipe).
+    progress = _ProgressPrinter() if output_format != "json" else None
     try:
         provider = build_provider(config)
         cache = ReviewCache(Path.cwd(), enabled=config.cache_enabled and not no_cache)
-        result: ReviewResult = asyncio.run(run_review(provider, files, config, cache=cache))
+        result: ReviewResult = asyncio.run(
+            run_review(provider, files, config, cache=cache, progress_callback=progress)
+        )
     except ProviderError as exc:
+        if progress is not None:
+            progress.clear()
         _warn(f"review skipped ({exc}). Commit continues. Set AICR_SKIP=1 to silence.")
         raise SystemExit(0) from None
     except Exception as exc:  # pragma: no cover - unexpected
+        if progress is not None:
+            progress.clear()
         if debug:
             raise
         _warn(f"review skipped (unexpected error: {exc}). Commit continues.")
         raise SystemExit(0) from None
+    finally:
+        if progress is not None:
+            progress.clear()
+
 
     if output_format == "json":
         click.echo(json_renderer.render(result))
@@ -324,8 +366,14 @@ def init(force: bool) -> None:
     settings["categories"] = _prompt_categories()
     settings["blocking"] = _prompt_blocking()
 
+    # Advanced options are optional: if declined, they're still written to the
+    # config file (commented out at their defaults) so everything is discoverable.
+    if click.confirm("\nConfigure advanced options?", default=False):
+        settings.update(_prompt_advanced())
+
     _write_config(config_path, provider=provider, settings=settings)
     click.echo(f"\nWrote {config_path}")
+
 
     if click.confirm("Install the git pre-commit hook now?", default=True):
         try:
@@ -408,6 +456,55 @@ def _prompt_blocking() -> str | None:
     )
 
 
+def _prompt_advanced() -> dict[str, object]:
+    """Prompt for the less-common tuning knobs, shown only on request.
+
+    Uses the same prompt style as the main wizard. Returns only the keys the
+    user actually set; everything else is written commented-out by
+    ``_write_config`` so the whole option surface stays discoverable.
+    """
+    advanced: dict[str, object] = {}
+    advanced["languages"] = click.prompt(
+        "Languages in scope (comma-separated, empty = auto-detect)",
+        default="",
+        show_default=False,
+    )
+    advanced["exclude_paths"] = click.prompt(
+        "Exclude paths (comma-separated globs)",
+        default="*.lock, dist/**, node_modules/**",
+    )
+    advanced["max_diff_lines_per_file"] = click.prompt(
+        "Max added lines per file before skipping",
+        type=int,
+        default=800,
+    )
+    advanced["max_files_per_review"] = click.prompt(
+        "Max files reviewed per run",
+        type=int,
+        default=50,
+    )
+    advanced["concurrency"] = click.prompt(
+        "Max simultaneous provider requests",
+        type=int,
+        default=5,
+    )
+    advanced["severity_display_threshold"] = _prompt_menu(
+        "Show comments at or above which severity?",
+        [
+            ("info", "everything"),
+            ("warning", "warning and critical"),
+            ("critical", "critical only"),
+        ],
+        default=1,
+    )
+    advanced["cache_enabled"] = click.confirm(
+        "Enable the hunk cache (reuse results for unchanged files)?",
+        default=True,
+    )
+    return advanced
+
+
+
 def _write_env(cwd: Path, key: str) -> None:
     """Append/update OPENROUTER_API_KEY in .env without clobbering other vars."""
     env_path = cwd / ".env"
@@ -422,30 +519,72 @@ def _write_env(cwd: Path, key: str) -> None:
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _yaml_list(items: list[str]) -> str:
+    """Render a list of strings as an inline YAML array."""
+    return "[" + ", ".join(f'"{i}"' for i in items) + "]"
+
+
 def _write_config(config_path: Path, *, provider: str, settings: dict[str, object]) -> None:
-    """Write a commented .aicr.yaml from the wizard's answers."""
+    """Write a fully-populated, commented ``.aicr.yaml`` from the wizard.
+
+    Every supported option appears in the file. Options the user set are written
+    live; options they left at the default are written **commented out** at their
+    default value — so the whole configuration surface is always discoverable in
+    one place, whether or not the user touched the advanced step.
+    """
     raw_categories = settings.get("categories")
     categories = raw_categories if isinstance(raw_categories, list) else list(_CATEGORY_CHOICES)
+
+    def line(key: str, present: bool, value: str, comment: str) -> str:
+        # A single option row: live when the user set it, else commented at default.
+        body = f"{key}: {value}"
+        prefix = "" if present else "# "
+        pad = " " * max(1, 30 - len(prefix + body))
+        return f"{prefix}{body}{pad}# {comment}"
+
+    base_url = settings.get("base_url")
+    languages = str(settings.get("languages") or "").strip()
+    lang_list = _split_patterns(languages)
+    exclude = _split_patterns(str(settings.get("exclude_paths") or "")) or [
+        "*.lock",
+        "dist/**",
+        "node_modules/**",
+    ]
+    max_lines = settings.get("max_diff_lines_per_file")
+    max_files = settings.get("max_files_per_review")
+    concurrency = settings.get("concurrency")
+    display = settings.get("severity_display_threshold")
+    cache_enabled = settings.get("cache_enabled")
+    blocking = settings.get("blocking")
+
     lines = [
         "# aicr configuration — safe to commit. The API key lives in .env, never here.",
+        "# Every option is listed below; commented lines show the default value.",
+        "",
         f"provider: {provider}",
         f"model: {settings['model']}",
+        line("base_url", bool(base_url), str(base_url or "http://localhost:11434/v1"),
+             "override the provider API endpoint (e.g. Ollama)"),
+        f"categories: {_yaml_list([str(c) for c in categories])}",
+        line("languages", bool(lang_list), _yaml_list(lang_list),
+             "empty = auto-detect per file by extension"),
+        f"exclude_paths: {_yaml_list(exclude)}",
+        line("max_diff_lines_per_file", max_lines is not None, str(max_lines or 800),
+             "skip files with more added lines than this"),
+        line("max_files_per_review", max_files is not None, str(max_files or 50),
+             "cap files reviewed per run"),
+        line("concurrency", concurrency is not None, str(concurrency or 5),
+             "max simultaneous provider requests"),
+        line("severity_display_threshold", display is not None, str(display or "info"),
+             "show comments at/above: info | warning | critical"),
+        line("cache_enabled", cache_enabled is not None,
+             "true" if cache_enabled is not False else "false",
+             "reuse results for unchanged files across runs"),
+        line("severity_block_threshold", bool(blocking), str(blocking or "critical"),
+             "block commits at/above this severity (opt-in)"),
     ]
-    if settings.get("base_url"):
-        lines.append(f"base_url: {settings['base_url']}")
-    cats = ", ".join(str(c) for c in categories)
-    lines.append(f"categories: [{cats}]")
-
-    lines.append("languages: []                 # empty = auto-detect per file by extension")
-    lines.append('exclude_paths: ["*.lock", "dist/**", "node_modules/**"]')
-    lines.append("max_diff_lines_per_file: 800")
-    lines.append("cache_enabled: true")
-    blocking = settings.get("blocking")
-    if blocking:
-        lines.append(f"severity_block_threshold: {blocking}   # blocking mode enabled")
-    else:
-        lines.append("# severity_block_threshold: critical   # uncomment to block commits")
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 
 if __name__ == "__main__":  # pragma: no cover

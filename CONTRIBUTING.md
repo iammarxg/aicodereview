@@ -65,6 +65,22 @@ pytest -q                 # tests (no network calls; a FakeProvider is used)
 - Include tests for new behavior and keep the three gates green.
 - Update `CHANGELOG.md` under "Unreleased".
 
+## Releasing
+
+Use the release helper — it keeps the version, tag, and CHANGELOG in sync:
+
+```bash
+python scripts/release.py minor    # new features   → v0.X.0
+python scripts/release.py patch    # bug/small fixes → v0.0.X
+python scripts/release.py major    # breaking        → vX.0.0
+# or an exact version:  python scripts/release.py --version 0.4.2
+```
+
+It bumps `src/aicr/__init__.py` and `pyproject.toml`, rolls the CHANGELOG
+"Unreleased" section into the new version, commits, creates an annotated
+`vX.Y.Z` tag, and pushes the branch + tag. It refuses to run on a dirty tree.
+
+
 ## Reporting bugs
 
 Open an issue with a minimal repro (a small sample diff is ideal). Never paste

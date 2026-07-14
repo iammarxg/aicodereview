@@ -38,9 +38,12 @@ git commit -m "your change"
 
 `aicr init` is an rclone-style wizard: it asks which provider you want, saves
 your OpenRouter key to a gitignored `.env` (never to `.aicr.yaml`), lets you pick
-categories and blocking behavior, and offers to install the pre-commit hook.
-Prefer to do it by hand? Set `OPENROUTER_API_KEY`, write a `.aicr.yaml`, and run
-`aicr enable`.
+categories and blocking behavior, optionally walks you through advanced options,
+and offers to install the pre-commit hook. The generated `.aicr.yaml` always
+lists every option — the ones you didn't set are written commented-out at their
+defaults, so the whole config surface is discoverable in one place. Prefer to do
+it by hand? Set `OPENROUTER_API_KEY`, write a `.aicr.yaml`, and run `aicr enable`.
+
 
 You can also run a review manually, without committing:
 
