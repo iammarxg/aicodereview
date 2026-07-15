@@ -74,9 +74,27 @@ class LLMProvider(ABC):
 - `parse_comments()` (in `providers/base.py`) is shared, provider-agnostic
   response handling: it extracts JSON from the raw model text (tolerating
   markdown fences / surrounding prose), validates each item against
-  `ReviewComment`, drops individually malformed items, and — critically —
-  **drops any comment whose line isn't an actually-changed line** in that file.
-  This is the safety net that keeps output line-mapped and on-topic.
+  `ReviewComment`, drops individually malformed items, **drops any comment whose
+  line isn't an actually-changed line** in that file, and **drops low-confidence
+  comments** below `MIN_CONFIDENCE`. Together these are the safety net that keeps
+  output line-mapped, on-topic, and free of speculative noise.
+
+### Grounding the model (anti-hallucination)
+
+The prompts are built defense-in-depth to stop the model asserting things it
+can't actually see:
+
+- `prompts/builder.py` always concatenates `system_base.txt` (contract + a "stay
+  silent below 90% confidence" rule) **and** `grounding.txt` (a dedicated block
+  forbidding claims about anything outside the diff: library/SDK behavior, whether
+  a model/API name or version is valid, unseen inputs, etc.), regardless of which
+  category templates are selected. Each category template also demands
+  diff-grounded evidence.
+- The model self-rates each finding with a `confidence` (0–1) in the output
+  schema; `parse_comments` filters on it (see above). This is a server-side
+  backstop, so even a model that ignores the prompt can't flood the report with
+  guesses. Confidence is internal — used only for filtering, never displayed.
+
 
 ### Usage accounting is a provider-agnostic seam
 
@@ -109,9 +127,14 @@ pipeline without any network calls.
 characterize a repository: it walks git-tracked files, filters binary/heavy
 directories, and counts files, lines, and characters, detecting languages by
 extension. From those counts it recommends excludes and limits and estimates a
-full-repo review time via `estimate_scan_seconds()` (tokens ≈ chars/4, divided by
-throughput × concurrency). `reviewable_files()` exposes the same discovery +
-filtering so the two callers agree on exactly which files are in scope.
+full-repo review time via `estimate_scan_seconds()`. Token estimates
+(`estimate_total_tokens()`) count file content (≈ chars/4) **plus** the per-file
+prompt overhead (system + grounding + category templates) and output allowance
+that every one-call-per-file scan incurs — content alone ran ~40% low.
+`analyze_repo()` also honors the configured `exclude_paths` (reporting how many
+files those globs removed), and `reviewable_files()` exposes the same discovery +
+filtering, so `init` and `scan` agree on exactly which files are in scope.
+
 
 `scan.py` powers `aicr scan`: it loads each reviewable file's full text and
 synthesizes a `DiffFile` whose lines are *all* marked "added". That's the whole

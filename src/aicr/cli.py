@@ -355,8 +355,8 @@ def scan(
     calls, it prints a size + time estimate and asks for confirmation first
     (skip with ``--yes``). Use ``--max-files`` to cap the cost.
     """
-    from aicr.analyze import AnalysisError, analyze_repo
-    from aicr.scan import collect_scan_files
+    from aicr.analyze import AnalysisError
+    from aicr.scan import collect_scan_files, estimate_scan_tokens
 
     cwd = Path.cwd()
 
@@ -364,9 +364,9 @@ def scan(
         config = _resolve_config(categories=categories, model=model)
         if max_files is not None:
             config.max_files_per_review = max_files
-        analysis = analyze_repo(cwd)
         files = collect_scan_files(cwd, exclude_paths=config.exclude_paths)
     except (ConfigError, AnalysisError) as exc:
+
         _error(str(exc))
         raise SystemExit(1) from None
     except Exception as exc:  # pragma: no cover - unexpected
@@ -403,11 +403,15 @@ def scan(
     # inform) and --format json (must stay a clean pipe). The sample review is
     # served back from the cache on the full run below, so it isn't wasted.
     if output_format != "json" and not assume_yes:
+        # Estimate tokens from the files actually being scanned (post-cap,
+        # post-exclude), so the number matches the "N file(s)" beside it.
+        est_tokens = estimate_scan_tokens(files)
         click.echo(
             f"About to scan {len(files)} file(s) "
-            f"(~{analysis.estimated_tokens:,} tokens, "
+            f"(~{est_tokens:,} tokens, "
             f"provider {config.provider}:{config.model})."
         )
+
         if capped_note:
             click.echo(capped_note)
         _print_scan_estimate(provider, files, config, cache=cache, debug=debug)
@@ -706,17 +710,30 @@ def _maybe_analyze_repo(
 
     from aicr.analyze import AnalysisError, analyze_repo
 
+    # Honor the excludes the user just configured so this count matches what
+    # `aicr scan` will actually review (they used to disagree — init ignored the
+    # config globs and over-counted).
+    effective_excludes = _split_patterns(str(settings.get("exclude_paths") or ""))
+
     try:
-        analysis = analyze_repo(cwd)
+        analysis = analyze_repo(cwd, exclude_paths=effective_excludes)
     except AnalysisError as exc:
         _warn(f"couldn't analyze the repo ({exc}).")
         return
 
     langs = ", ".join(f"{name} ({n})" for name, n in analysis.languages[:6]) or "none detected"
+    excluded = analysis.total_excluded_by_config
+    tracked_note = (
+        f" ({analysis.total_files + excluded} tracked, {excluded} excluded by your config)"
+        if excluded
+        else ""
+    )
     click.echo(
-        f"\n  {analysis.total_files} reviewable files · {analysis.total_lines:,} lines · "
+        f"\n  {analysis.total_files} reviewable files{tracked_note} · "
+        f"{analysis.total_lines:,} lines · "
         f"~{analysis.total_chars:,} chars · ~{analysis.estimated_tokens:,} tokens (approx.)"
     )
+
     click.echo(f"  Languages: {langs}")
     click.echo(f"  Recommended excludes:  {', '.join(analysis.recommended_excludes)}")
     click.echo(

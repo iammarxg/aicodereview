@@ -24,6 +24,19 @@ from pathlib import Path
 # Roughly how many characters map to one LLM token (OpenAI/Gemini-ish average).
 CHARS_PER_TOKEN = 4
 
+# Tokens sent on EVERY per-file call beyond the file's own content: the system
+# base contract, the grounding block, the selected category templates, and the
+# user-prompt scaffolding. A scan makes one call per file, so this fixed overhead
+# is real and sizable — ignoring it (counting only content ~chars/4) undercounts
+# total tokens badly on small files, which is what made the pre-scan "~tokens"
+# number read ~40% low. Deliberately a round, slightly-conservative figure.
+PROMPT_OVERHEAD_TOKENS_PER_FILE = 700
+
+# Output tokens the model generates per file (the JSON comments). Also counted
+# and billed, and also missing from a content-only estimate.
+OUTPUT_TOKENS_PER_FILE = 200
+
+
 # Per-file API-call overhead, in seconds: connection + prompt processing + output
 # generation latency that doesn't scale with input size. A scan makes one call
 # per file, so this fixed cost dominates for small files and must not be ignored
@@ -114,7 +127,12 @@ class RepoAnalysis:
     total_files: int = 0
     total_lines: int = 0
     total_chars: int = 0
+    # Files reviewable by type but removed by the user's .aicr.yaml exclude globs.
+    # Lets the wizard show "N tracked · M after your excludes" so its count agrees
+    # with what `aicr scan` will actually review.
+    total_excluded_by_config: int = 0
     languages: list[tuple[str, int]] = field(default_factory=list)  # (label, file count)
+
     recommended_excludes: list[str] = field(default_factory=list)
     recommended_languages: list[str] = field(default_factory=list)
     recommended_max_files: int = 50
@@ -122,12 +140,38 @@ class RepoAnalysis:
 
     @property
     def estimated_tokens(self) -> int:
-        """Approximate total prompt tokens (~chars / 4)."""
+        """Approximate total tokens for a scan of these files.
+
+        Includes both the file *content* (~chars / 4) and the per-file prompt
+        overhead + output allowance that every call incurs — a scan sends one call
+        per file, so counting content alone undercounts real usage badly (that was
+        the ~40%-low pre-scan number). See ``estimate_total_tokens``.
+        """
+        return estimate_total_tokens(self.total_chars, self.total_files)
+
+    @property
+    def content_tokens(self) -> int:
+        """Just the file-content token estimate (~chars / 4), no call overhead."""
         return self.total_chars // CHARS_PER_TOKEN
+
+
+
+def estimate_total_tokens(total_chars: int, file_count: int) -> int:
+    """Estimate total tokens a scan will use: content + per-file call overhead.
+
+    ``content ≈ total_chars / CHARS_PER_TOKEN`` plus, for each of the ``file_count``
+    per-file calls, the fixed prompt overhead (system + grounding + category
+    templates + scaffolding) and the model's output. A content-only estimate
+    (the old behavior) ignored both and read ~40% low on small files.
+    """
+    content = total_chars // CHARS_PER_TOKEN
+    per_file = PROMPT_OVERHEAD_TOKENS_PER_FILE + OUTPUT_TOKENS_PER_FILE
+    return content + max(0, file_count) * per_file
 
 
 class AnalysisError(Exception):
     """Raised when the repo can't be analyzed (e.g. not a git repository)."""
+
 
 
 def _tracked_files(repo_dir: Path) -> list[str]:
@@ -187,13 +231,31 @@ def reviewable_files(repo_dir: Path, exclude_paths: list[str] | None = None) -> 
 
 
 
-def analyze_repo(repo_dir: Path | None = None) -> RepoAnalysis:
+def _matches_any(rel: str, patterns: list[str]) -> bool:
+    """True if ``rel`` (or its basename) matches any glob in ``patterns``."""
+    name = Path(rel).name
+    return any(fnmatch(rel, pat) or fnmatch(name, pat) for pat in patterns)
+
+
+def analyze_repo(
+    repo_dir: Path | None = None,
+    *,
+    exclude_paths: list[str] | None = None,
+) -> RepoAnalysis:
     """Analyze the git repo at ``repo_dir`` (defaults to cwd). Fast, no network.
 
     Counts reviewable tracked files (lines + characters), detects languages, and
     derives recommended ``.aicr.yaml`` settings scaled to the repo size.
+
+    ``exclude_paths`` (the effective ``.aicr.yaml`` globs) is applied on top of the
+    built-in non-source filtering, so ``total_files`` matches exactly what ``aicr
+    scan`` will review. ``total_excluded_by_config`` records how many otherwise-
+    reviewable files those user globs removed, so the wizard can show a
+    tracked-vs-after-excludes breakdown instead of a number that disagrees with
+    the scan.
     """
     repo_dir = repo_dir or Path.cwd()
+    excludes = exclude_paths or []
     files = _tracked_files(repo_dir)
 
     analysis = RepoAnalysis()
@@ -215,9 +277,15 @@ def analyze_repo(repo_dir: Path | None = None) -> RepoAnalysis:
             seen_non_source.add(f"*{ext}")
         if not _is_reviewable(rel):
             continue
+        # Reviewable by type, but removed by the user's config globs: count it as
+        # excluded so init and scan agree on the final file set.
+        if excludes and _matches_any(rel, excludes):
+            analysis.total_excluded_by_config += 1
+            continue
         abs_path = repo_dir / rel
         try:
             text = abs_path.read_text(encoding="utf-8", errors="ignore")
+
         except (OSError, UnicodeError):
             continue
         analysis.total_files += 1
@@ -319,7 +387,8 @@ def estimate_from_sample(
     """Measured scan estimate: extrapolate from one real, timed sample review.
 
     ``sample_seconds`` is the wall-clock time a single representative-sized file
-    took to review (see ``scan.measure_sample_seconds``). Since files are reviewed
+    took to review (measured in ``cli._print_scan_estimate``). Since files are reviewed
+
     ``concurrency`` at a time, the whole scan is roughly ``ceil(files/concurrency)``
     batches, each about as long as that sample:
 

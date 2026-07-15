@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Category = Literal["bug", "security", "readability", "style"]
 Severity = Literal["info", "warning", "critical"]
@@ -35,7 +35,16 @@ def normalize_category(name: str) -> Category:
 
 
 class ReviewComment(BaseModel):
-    """A single line-mapped review comment produced by an LLM provider."""
+    """A single line-mapped review comment produced by an LLM provider.
+
+    ``confidence`` (0.0–1.0) is the model's self-rated certainty that the issue is
+    real. It is the backstop for the anti-hallucination prompt work (v0.4.2): the
+    model is told to report only findings it's highly sure about, and
+    ``parse_comments`` drops anything below a threshold even if the model ignores
+    that instruction. It's an internal signal used for filtering — not shown in the
+    report. Comments missing the field default to ``1.0`` so older/again-simple
+    providers aren't silently discarded.
+    """
 
     file: str
     line: int = Field(..., description="New-file line number the comment refers to.")
@@ -43,6 +52,32 @@ class ReviewComment(BaseModel):
     severity: Severity = "info"
     comment: str
     suggestion: str | None = None
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Model self-rated certainty (0–1) that the issue is real.",
+    )
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_confidence(cls, value: object) -> object:
+        """Accept a percentage (e.g. 95) or a fraction (0.95); normalize to 0–1.
+
+        Models are inconsistent: some emit ``0.95``, some ``95``. Anything >1 is
+        treated as a percentage. Unparseable values fall back to ``1.0`` (keep the
+        comment) rather than dropping a possibly-valid finding on a formatting quirk.
+        """
+        if value is None:
+            return 1.0
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 1.0
+        if number > 1.0:
+            number = number / 100.0
+        return max(0.0, min(1.0, number))
+
 
 
 class TokenUsage(BaseModel):

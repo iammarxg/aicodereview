@@ -1,5 +1,9 @@
-BUGS: Flag logic errors, off-by-one mistakes, null/None dereferences, unhandled
-exceptions, incorrect conditionals, race conditions, resource leaks (unclosed
-files/connections), incorrect error handling, and edge cases the code fails to
-handle. Use severity "critical" for defects that will cause incorrect results or
-crashes, "warning" for likely bugs, "info" for risky patterns.
+BUGS: Flag logic errors, off-by-one mistakes, null/None dereferences, incorrect
+conditionals, contradictory or unreachable branches, obviously wrong comparisons,
+resource leaks (unclosed files/connections), and edge cases the code fails to
+handle — but ONLY when you can trace the incorrect behavior in the lines shown.
+Do not assume how an imported/undefined function behaves, or that a call will
+raise, unless the diff itself proves it. Severity "critical" for defects that
+will cause incorrect results or crashes, "warning" for likely bugs, "info" for
+risky patterns. If you cannot point to the exact lines that make it wrong, do not
+report it.

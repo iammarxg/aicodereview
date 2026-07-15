@@ -32,6 +32,15 @@ class MalformedResponseError(Exception):
 
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
+# Minimum self-rated confidence for a comment to survive parsing. The prompts
+# (v0.4.2) tell the model to only report findings it's ≥90% sure are real and to
+# self-rate each one; this is the server-side backstop that drops overconfident
+# noise even when a model ignores that instruction. Comments without a confidence
+# default to 1.0 (see ``ReviewComment``), so this never penalizes providers/models
+# that don't emit the field.
+MIN_CONFIDENCE = 0.9
+
+
 
 def _extract_json_array(text: str) -> str:
     """Best-effort extraction of a JSON array from an LLM response.
@@ -83,8 +92,11 @@ def parse_comments(raw_text: str, diff_file: DiffFile) -> list[ReviewComment]:
             continue  # drop individual malformed items rather than fail the file
         if changed_lines and comment.line not in changed_lines:
             continue  # hallucinated / context line — drop it
+        if comment.confidence < MIN_CONFIDENCE:
+            continue  # low-confidence / speculative — drop it (anti-hallucination)
         comments.append(comment)
     return comments
+
 
 
 class LLMProvider(ABC):

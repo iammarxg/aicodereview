@@ -6,7 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Reviewer is far less likely to hallucinate.** The system prompt was rewritten
+  around a strict *grounding* contract: the model may only report issues it can
+  prove from the code visible in the diff, and must **not** make claims about
+  things it can't see — whether a library/SDK function exists or behaves a certain
+  way, whether a model/API name or version is valid, or what unseen inputs contain.
+  A new always-included grounding block spells this out, and each category template
+  now demands diff-grounded evidence. This targets false positives like "that model
+  name is wrong" (it wasn't) or "this SDK call can raise" (unprovable from the diff).
+- The prompt now asks the model to **only report findings it's ≥90% confident are
+  real** and to stay silent otherwise — a missed nit is cheaper than a false alarm.
+
+### Added
+- **Confidence backstop.** `ReviewComment` gained a `confidence` field (0–1) that
+  the model self-rates per finding; `parse_comments` drops anything below the
+  threshold, so overconfident noise is filtered out even if a model ignores the
+  prompt. Confidence is internal (used only for filtering) and not shown in output.
+  Comments without the field default to kept, so simpler providers aren't penalized.
+
+### Fixed
+- **`aicr init` and `aicr scan` reported different file counts.** `init`'s analysis
+  ignored the `.aicr.yaml` `exclude_paths`, so it counted more files than `scan`
+  would review (e.g. 12 vs 8). `init` now honors the effective excludes and shows a
+  "N tracked · M excluded by your config" breakdown that agrees with the scan.
+- **The pre-scan token number didn't match the files being scanned.** `aicr scan`
+  showed the whole-repo token estimate even after excludes/`--max-files` capping;
+  it's now computed from the exact files that will be sent.
+- **Token estimates were ~40% low.** Both the `init` analysis and the `scan`
+  confirmation counted only file content (~chars/4), ignoring the per-file prompt
+  overhead (system + grounding + category templates) and model output that every
+  call incurs. Estimates now include that overhead — e.g. a repo that read ~12k
+  tokens now estimates ~19k, matching real usage of ~20k.
+
 ## [0.4.1] — 2026-07-15
+
 
 ### Added
 - **`aicr scan`** — review the whole repository's existing code, not just a diff.

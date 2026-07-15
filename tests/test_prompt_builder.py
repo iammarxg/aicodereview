@@ -41,3 +41,19 @@ def test_system_prompt_states_json_only_contract() -> None:
     prompt = build_system_prompt(["bug"])
     assert "JSON" in prompt
     assert "only" in prompt.lower()
+
+
+def test_grounding_block_always_included() -> None:
+    # The anti-hallucination block must appear regardless of selected categories.
+    for cats in (["bug"], ["style"], ["security", "readability"]):
+        prompt = build_system_prompt(cats)
+        assert "GROUNDING" in prompt
+
+
+def test_system_prompt_asks_for_confidence_and_calibration() -> None:
+    prompt = build_system_prompt(["bug"])
+    # The schema must request a confidence value...
+    assert "confidence" in prompt.lower()
+    # ...and the prompt must tell the model to stay silent when unsure.
+    assert "90%" in prompt
+

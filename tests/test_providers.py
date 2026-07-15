@@ -73,3 +73,51 @@ def test_non_json_raises(diff_file) -> None:
 def test_non_array_json_raises(diff_file) -> None:
     with pytest.raises(MalformedResponseError):
         parse_comments('{"file":"calc.py"}', diff_file)
+
+
+def test_missing_confidence_defaults_to_kept(diff_file) -> None:
+    # No confidence field → defaults to 1.0 → kept (backward compatible with
+    # providers/models that don't emit the field).
+    raw = '[{"file":"calc.py","line":4,"category":"bug","severity":"info","comment":"c"}]'
+    comments = parse_comments(raw, diff_file)
+    assert len(comments) == 1
+    assert comments[0].confidence == 1.0
+
+
+def test_low_confidence_comment_dropped(diff_file) -> None:
+    # A speculative, low-confidence finding is filtered out even though its line
+    # is valid — the anti-hallucination backstop (v0.4.2).
+    raw = (
+        '[{"file":"calc.py","line":4,"category":"bug","severity":"warning",'
+        '"comment":"maybe","confidence":0.4}]'
+    )
+    assert parse_comments(raw, diff_file) == []
+
+
+def test_high_confidence_comment_kept(diff_file) -> None:
+    raw = (
+        '[{"file":"calc.py","line":4,"category":"bug","severity":"warning",'
+        '"comment":"sure","confidence":0.95}]'
+    )
+    assert len(parse_comments(raw, diff_file)) == 1
+
+
+def test_confidence_as_percentage_is_normalized(diff_file) -> None:
+    # Models sometimes emit 95 instead of 0.95; treat >1 as a percentage.
+    raw = (
+        '[{"file":"calc.py","line":4,"category":"bug","severity":"info",'
+        '"comment":"c","confidence":95}]'
+    )
+    comments = parse_comments(raw, diff_file)
+    assert len(comments) == 1
+    assert comments[0].confidence == 0.95
+
+
+def test_confidence_at_threshold_is_kept(diff_file) -> None:
+    # Exactly the minimum confidence survives (>= threshold).
+    raw = (
+        '[{"file":"calc.py","line":4,"category":"bug","severity":"info",'
+        '"comment":"c","confidence":0.9}]'
+    )
+    assert len(parse_comments(raw, diff_file)) == 1
+

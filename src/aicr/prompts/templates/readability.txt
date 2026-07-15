@@ -1,4 +1,7 @@
-READABILITY: Flag unclear names, overly complex or deeply nested logic, long
-functions doing too much, missing or misleading comments where intent isn't
-obvious, magic numbers, duplicated logic, and confusing control flow. Prefer
-concrete refactoring suggestions. Severity is usually "info" or "warning".
+READABILITY: Flag genuinely unclear names, deeply nested or convoluted control
+flow, long functions doing too much, magic numbers, and duplicated logic that is
+visible in the diff. Prefer concrete refactoring suggestions. Do not speculate
+about author intent, and do not flag a comment as "misleading" unless the shown
+code plainly contradicts it. This is subjective — only raise a point when a
+competent reviewer would clearly agree, and keep severity to "info" or "warning".
+Style/formatting an autoformatter handles is out of scope here.

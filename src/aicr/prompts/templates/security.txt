@@ -1,6 +1,9 @@
-SECURITY: Flag injection risks (SQL, command, XSS), hardcoded secrets or
-credentials, unsafe deserialization, path traversal, missing input validation,
-weak cryptography, use of insecure functions (eval, exec, pickle on untrusted
-data), improper authentication/authorization checks, and leaking sensitive data
-in logs or errors. Use "critical" for exploitable vulnerabilities, "warning" for
-weaknesses, "info" for hardening suggestions.
+SECURITY: Flag injection risks (SQL, command, XSS) where untrusted data visibly
+reaches a sink, hardcoded secrets or credentials present in the diff, unsafe
+deserialization, path traversal, use of dangerous functions (eval, exec, pickle
+on untrusted data), and sensitive data written to logs — but ONLY when the shown
+code demonstrates it. Do not assume an input is attacker-controlled, that a value
+is a real secret, or that an unseen function is unsafe, without evidence in the
+diff. Use "critical" for exploitable vulnerabilities visible here, "warning" for
+clear weaknesses, "info" for hardening suggestions. If it depends on code or data
+you cannot see, do not report it.

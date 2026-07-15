@@ -35,14 +35,26 @@ def _read_template(name: str) -> str:
 
 
 def build_system_prompt(categories: list[Category]) -> str:
-    """Build the system prompt: base contract + selected category guidance."""
+    """Build the system prompt: base contract + grounding + category guidance.
+
+    The grounding block (anti-hallucination rules) is always included regardless
+    of the selected categories — it's the core defense against the model asserting
+    things it can't see in the diff (v0.4.2), so it must never be dropped.
+    """
     ordered = [c for c in CATEGORY_ORDER if c in set(categories)]
     if not ordered:
         raise ValueError("At least one review category must be selected.")
 
-    parts = [_read_template("system_base.txt"), "", "REVIEW CATEGORIES:"]
+    parts = [
+        _read_template("system_base.txt"),
+        "",
+        _read_template("grounding.txt"),
+        "",
+        "REVIEW CATEGORIES:",
+    ]
     parts.extend(_read_template(_TEMPLATE_FILE[c]) for c in ordered)
     return "\n\n".join(parts)
+
 
 
 def build_user_prompt(diff_file: DiffFile, languages: list[str]) -> str:

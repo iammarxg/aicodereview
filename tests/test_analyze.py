@@ -8,11 +8,14 @@ from pathlib import Path
 import pytest
 
 from aicr.analyze import (
+    OUTPUT_TOKENS_PER_FILE,
+    PROMPT_OVERHEAD_TOKENS_PER_FILE,
     AnalysisError,
     RepoAnalysis,
     analyze_repo,
     estimate_from_sample,
     estimate_scan_seconds,
+    estimate_total_tokens,
 )
 
 
@@ -63,8 +66,37 @@ def test_analyze_raises_outside_git_repo(tmp_path: Path) -> None:
 
 
 def test_estimated_tokens_from_chars() -> None:
+    # With no files, estimated_tokens is just the content estimate (~chars/4).
     analysis = RepoAnalysis(total_chars=4000)
     assert analysis.estimated_tokens == 1000
+    assert analysis.content_tokens == 1000
+
+
+def test_estimated_tokens_include_per_file_overhead() -> None:
+    # Content alone would be 1000 tokens; each of the 3 files also costs prompt
+    # overhead + output, so the total must be meaningfully larger (the ~40%-low
+    # bug was counting content only).
+    analysis = RepoAnalysis(total_chars=4000, total_files=3)
+    per_file = PROMPT_OVERHEAD_TOKENS_PER_FILE + OUTPUT_TOKENS_PER_FILE
+    assert analysis.estimated_tokens == 1000 + 3 * per_file
+    assert analysis.estimated_tokens > analysis.content_tokens
+
+
+def test_estimate_total_tokens_zero_files() -> None:
+    assert estimate_total_tokens(4000, 0) == 1000
+
+
+def test_analyze_honors_config_excludes(tmp_path: Path) -> None:
+    # Files reviewable by type but matched by a user exclude glob are removed from
+    # the count and tallied separately, so init agrees with scan.
+    _init_repo(tmp_path)
+    _add(tmp_path, "app.py", "x = 1\n")
+    _add(tmp_path, "generated_pb2.py", "x = 2\n")
+
+    analysis = analyze_repo(tmp_path, exclude_paths=["*_pb2.py"])
+    assert analysis.total_files == 1
+    assert analysis.total_excluded_by_config == 1
+
 
 
 def test_analyze_recommends_excluding_present_non_source_types(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from aicr.cli import cli
-from aicr.scan import build_scan_file, collect_scan_files
+from aicr.scan import build_scan_file, collect_scan_files, estimate_scan_tokens
 
 
 def _init_repo(path: Path) -> None:
@@ -39,7 +39,17 @@ def test_build_scan_file_empty_has_no_hunks() -> None:
     assert df.added_line_count() == 0
 
 
+def test_estimate_scan_tokens_reflects_actual_files() -> None:
+    # The pre-scan token number is computed from the files being scanned, and
+    # includes per-file overhead — so it grows with both content and file count.
+    one = [build_scan_file("a.py", "x = 1\n")]
+    two = [build_scan_file("a.py", "x = 1\n"), build_scan_file("b.py", "y = 2\n")]
+    assert estimate_scan_tokens(two) > estimate_scan_tokens(one)
+    assert estimate_scan_tokens([]) == 0
+
+
 def test_collect_scan_files_discovers_reviewable_and_applies_excludes(tmp_path: Path) -> None:
+
     _init_repo(tmp_path)
     _add(tmp_path, "app.py", "x = 1\n")
     _add(tmp_path, "lib/util.py", "y = 2\n")

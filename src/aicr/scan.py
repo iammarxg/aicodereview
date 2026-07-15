@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aicr.analyze import detect_language, reviewable_files
+from aicr.analyze import detect_language, estimate_total_tokens, reviewable_files
 from aicr.models import DiffFile, DiffHunk, DiffLine
 
 
@@ -45,7 +45,20 @@ def file_char_count(diff_file: DiffFile) -> int:
     return sum(len(line.content) for hunk in diff_file.hunks for line in hunk.lines)
 
 
+def estimate_scan_tokens(files: list[DiffFile]) -> int:
+    """Estimate total tokens for scanning exactly ``files``.
+
+    Uses the file contents actually being scanned (not the whole-repo analysis),
+    so the "~tokens" shown before a capped or excluded scan matches the set that
+    will be sent. Includes the same per-file prompt overhead + output allowance as
+    the analysis estimate (see ``analyze.estimate_total_tokens``).
+    """
+    total_chars = sum(file_char_count(f) for f in files)
+    return estimate_total_tokens(total_chars, len(files))
+
+
 def representative_sample(files: list[DiffFile]) -> DiffFile:
+
     """Pick the file closest to the average size — a fair timing sample.
 
     The measured estimate reviews one real file to learn the provider's actual

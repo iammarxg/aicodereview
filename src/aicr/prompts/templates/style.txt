@@ -1,5 +1,7 @@
-STYLE: Flag deviations from common conventions for the language — inconsistent
-formatting, non-idiomatic constructs, missing type hints where the codebase uses
-them, naming-convention violations, and dead or commented-out code. Keep these
-low-severity ("info") unless they actively harm correctness or maintainability.
-Do not nitpick things an autoformatter would fix.
+STYLE: Flag clear deviations from well-established conventions for the language
+that are visible in the diff — non-idiomatic constructs, missing type hints where
+the surrounding shown code uses them, naming-convention violations, and dead or
+commented-out code. Keep these low-severity ("info") unless they actively harm
+correctness or maintainability. Do not nitpick anything an autoformatter would
+fix, and do not invent a project style rule you cannot see being followed
+elsewhere in the diff. When unsure whether it's a real convention, skip it.
