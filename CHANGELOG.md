@@ -6,7 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **SARIF output (`--format sarif`).** `aicr review` and `aicr scan` can now emit
+  SARIF 2.1.0, the format GitHub code scanning and other CI dashboards ingest to
+  show findings as first-class PR annotations. The mapping is small and stable:
+  one rule per review category (so results group cleanly), each comment becomes a
+  result with its file/line and a severity→level mapping (critical→error,
+  warning→warning, info→note). Emitted via a new `report/sarif_renderer.py`, a
+  pure consumer of `ReviewResult` — nothing upstream changes (roadmap B3).
+- **Large files are now chunked instead of skipped (`chunk_large_files`, on by
+  default).** Previously a file with more added lines than
+  `max_diff_lines_per_file` was skipped entirely, so the biggest — often most
+  important — files got no review. aicr now splits such a file into overlapping
+  windows that each carry their real new-file line numbers, reviews each, and
+  dedupes findings that land in the overlap so a split file reads like one review.
+  It still counts as a single file in the summary. Set `chunk_large_files: false`
+  to restore the old skip-if-too-large behavior (roadmap B1).
+
 ## [0.4.2] — 2026-07-15
+
 
 ### Changed
 

@@ -17,17 +17,20 @@ config.py       load .aicr.yaml + OPENROUTER_API_KEY (env / .env)
 diff/source.py  LocalGitSource → `git diff --cached` → raw unified diff
    ▼
 diff/parser.py  unidiff → list[DiffFile]  (paths, hunks, new-file line numbers)
-                filters binary / excluded / oversized files
+                filters binary / excluded files
    ▼
-engine.py       for each DiffFile, concurrently (asyncio.gather + semaphore):
+engine.py       split oversized files into chunks (diff/chunk.py), then for each
+                unit, concurrently (asyncio.gather + semaphore):
    ▼
 prompts/builder.py   system + user prompt for the selected categories/language
    ▼
 providers/openrouter.py   HTTP call → raw text → parse_comments() → list[ReviewComment]
    ▼
 report/cli_renderer.py    group by file, sort by line, color by severity → stdout
+                (or json_renderer / sarif_renderer for --format json|sarif)
    ▼
 exit 0          always — v1 is warn-only, never blocks the commit
+
 ```
 
 ## The two adapter interfaces
@@ -143,9 +146,21 @@ pipeline (including the "only comment on changed lines" safety net in
 `parse_comments`), so reviewing existing code reuses everything review already does.
 The CLI gates it behind a size/time estimate + confirmation and a `--max-files` cap.
 
+## Large-file chunking (`diff/chunk.py`)
 
+A file with more added lines than `max_diff_lines_per_file` used to be skipped
+outright, so the biggest files got no review. `chunk_diff_file()` instead splits
+such a file into overlapping windows, each a normal `DiffFile` carrying the same
+path and the lines' **real** new-file numbers, so comments still map back
+correctly. A small overlap at each boundary means a finding straddling a split is
+visible in both neighbors; `dedupe_comments()` then collapses the identical
+findings so the report shows each once. Because every chunk shares the original
+path, the engine counts them as one logical file and the cache keys them by
+content (each chunk gets its own entry). It's gated by `chunk_large_files`
+(default on) — turn it off to restore skip-if-too-large.
 
 ## Error isolation
+
 
 `engine.py` reviews files concurrently but isolates failures **per file**: a
 provider error, a rate limit exhausting retries, or malformed JSON on one file

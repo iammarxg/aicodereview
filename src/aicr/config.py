@@ -62,7 +62,12 @@ class Config(BaseModel):
     languages: list[str] = Field(default_factory=list)
     exclude_paths: list[str] = Field(default_factory=list)
     max_diff_lines_per_file: int = 800
+    # When a file exceeds max_diff_lines_per_file, split it into overlapping
+    # chunks and review each (deduping boundary duplicates) instead of skipping
+    # the whole file. Opt out to restore the old skip-if-too-large behavior.
+    chunk_large_files: bool = True
     max_files_per_review: int = 50
+
     concurrency: int = 5
     severity_display_threshold: Severity = "info"
     # Blocking mode (opt-in). None = never block (warn-only default, plan §8).

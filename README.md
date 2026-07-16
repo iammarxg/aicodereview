@@ -62,7 +62,9 @@ aicr review                 # staged changes, colored report
 aicr review --unstaged      # working-tree changes not yet staged
 aicr review --range main..HEAD   # a whole branch before you push
 aicr review --format json   # machine-readable (for CI/editors later)
+aicr review --format sarif  # SARIF 2.1.0 for GitHub code scanning / CI
 ```
+
 
 ## Example output
 
@@ -103,17 +105,17 @@ For Ollama: install it, `ollama pull llama3.1`, then set `provider: ollama` in
 | Command | Description |
 |---|---|
 | `aicr init` | Interactive setup wizard (provider, key, categories, hook). |
-| `aicr review [--unstaged\|--range A..B] [--strict] [--no-cache] [--format cli\|json] [--category ...] [--model ...] [--include ...]` | Review changes. Warn-only (exit 0) unless `--strict`. |
-| `aicr scan [--max-files N] [--yes] [--format cli\|json] [--category ...] [--model ...]` | Review the whole repo's existing code (not just a diff). Shows a cost/time estimate and confirms first. |
+| `aicr review [--unstaged\|--range A..B] [--strict] [--no-cache] [--format cli\|json\|sarif] [--category ...] [--model ...] [--include ...]` | Review changes. Warn-only (exit 0) unless `--strict`. |
+| `aicr scan [--max-files N] [--yes] [--format cli\|json\|sarif] [--category ...] [--model ...]` | Review the whole repo's existing code (not just a diff). Shows a cost/time estimate and confirms first. |
 | `aicr enable [--force]` | Install `.git/hooks/pre-commit` in the current repo. |
 | `aicr disable` | Remove the aicr pre-commit hook. |
 | `aicr reset [--yes]` | Remove everything aicr added: hook, `.aicr.yaml`, and the `.aicr/` cache (offers to strip the key from `.env`). |
 | `aicr config` | Show the resolved configuration (never prints the API key). |
 
 
-
 `install-hook` / `uninstall-hook` remain as hidden aliases for `enable` /
 `disable`. Bypass a single commit: `AICR_SKIP=1 git commit -m "..."`.
+
 
 ### Blocking mode (opt-in)
 
@@ -179,10 +181,12 @@ model: openrouter/free        # an OpenRouter/Gemini model, or a pulled Ollama m
 categories: [bugs, security, readability, style]
 languages: []                 # empty = auto-detect per file by extension
 exclude_paths: ["*.lock", "dist/**", "node_modules/**", "*.md"]
-max_diff_lines_per_file: 800  # skip files with more added lines than this
+max_diff_lines_per_file: 800  # cap added lines per file before chunking kicks in
+chunk_large_files: true       # split oversized files into chunks (vs. skipping)
 concurrency: 5                # max simultaneous provider requests
 cache_enabled: true           # reuse results for unchanged files across runs
 severity_display_threshold: info
+
 # severity_block_threshold: critical    # uncomment to block commits (opt-in)
 ```
 

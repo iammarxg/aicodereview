@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 from aicr.cache import ReviewCache, make_key
 from aicr.config import Config
+from aicr.diff.chunk import chunk_diff_file, dedupe_comments
 from aicr.models import Category, DiffFile, ReviewComment, ReviewResult
 from aicr.providers.base import LLMProvider, MalformedResponseError, ProviderError
 
@@ -27,9 +28,20 @@ ProgressCallback = Callable[[str, int, int], None]
 
 
 
-def _reviewable(files: list[DiffFile], max_lines: int) -> tuple[list[DiffFile], int, int]:
-    """Partition files into reviewable ones and count skipped binary/too-large."""
-    reviewable: list[DiffFile] = []
+def _reviewable(
+    files: list[DiffFile], max_lines: int, *, chunk_large: bool
+) -> tuple[list[DiffFile], int, int]:
+
+    """Partition files into reviewable units and count skips.
+
+    Returns ``(units, skipped_binary, skipped_too_large)`` where ``units`` is the
+    list of ``DiffFile`` objects to send to the provider. A file larger than
+    ``max_lines`` is either split into overlapping chunks (``chunk_large=True``,
+    each chunk a unit sharing the file's path) or skipped (counted in
+    ``skipped_too_large``). Because chunks of one file share that file's path,
+    callers count distinct paths to report logical files reviewed.
+    """
+    units: list[DiffFile] = []
     skipped_binary = 0
     skipped_too_large = 0
     for f in files:
@@ -39,10 +51,15 @@ def _reviewable(files: list[DiffFile], max_lines: int) -> tuple[list[DiffFile], 
         if f.added_line_count() == 0:
             continue  # nothing added — skip silently, don't waste a call
         if len(f.hunks) and f.added_line_count() > max_lines:
-            skipped_too_large += 1
+            if not chunk_large:
+                skipped_too_large += 1
+                continue
+            units.extend(chunk_diff_file(f, max_lines))
             continue
-        reviewable.append(f)
-    return reviewable, skipped_binary, skipped_too_large
+        units.append(f)
+    return units, skipped_binary, skipped_too_large
+
+
 
 
 async def _review_one(
@@ -106,28 +123,40 @@ async def run_review(
     """
     start = time.perf_counter()
 
-    reviewable, skipped_binary, skipped_too_large = _reviewable(
-        files, config.max_diff_lines_per_file
+    units, skipped_binary, skipped_too_large = _reviewable(
+        files, config.max_diff_lines_per_file, chunk_large=config.chunk_large_files
     )
 
-    # Cap the number of files to avoid runaway cost/latency (review §3).
-    if len(reviewable) > config.max_files_per_review:
-        reviewable = reviewable[: config.max_files_per_review]
+    # Cap the number of units to avoid runaway cost/latency (review §3). Chunks
+    # count as units here — a single huge file can consume the whole budget,
+    # which is the intended safety valve.
+    if len(units) > config.max_files_per_review:
+        units = units[: config.max_files_per_review]
+
+    # Distinct source paths among the (capped) units = logical files reviewed.
+    # Chunks of one big file share a path, so a split file still counts once,
+    # and the count reflects the cap rather than the pre-cap total.
+    logical_files = len({f.path for f in units})
+
 
     # Split into cache hits (served from disk) and misses (sent to the provider).
+    # Keys are keyed by unit index, not path: chunks of one big file share a path
+    # but have distinct content, so a per-index key avoids collisions while
+    # ``make_key`` (content-based) still gives each chunk its own cache entry.
     cached_comments: list[ReviewComment] = []
-    to_review: list[DiffFile] = []
-    keys: dict[str, str] = {}
+    to_review: list[tuple[int, DiffFile]] = []
+    keys: dict[int, str] = {}
     cached_count = 0
-    for f in reviewable:
+    for idx, f in enumerate(units):
         key = make_key(f, provider=provider.name, model=config.model, categories=config.categories)
-        keys[f.path] = key
+        keys[idx] = key
         hit = cache.get(key) if cache is not None else None
         if hit is not None:
             cached_comments.extend(hit)
             cached_count += 1
         else:
-            to_review.append(f)
+            to_review.append((idx, f))
+
 
     tracker = (
         _ProgressTracker(len(to_review), progress_callback)
@@ -141,26 +170,28 @@ async def run_review(
             _review_one(
                 provider, f, config.categories, config.languages, semaphore, errors, tracker
             )
-            for f in to_review
+            for _, f in to_review
         )
     )
 
-    # Record freshly-reviewed files back into the cache (only clean successes).
-
+    # Record freshly-reviewed units back into the cache (only clean successes).
     errored_paths = {msg.split(":", 1)[0] for msg in errors}
     fresh_comments: list[ReviewComment] = []
-    for f, file_comments in zip(to_review, results, strict=True):
+    for (idx, f), file_comments in zip(to_review, results, strict=True):
         fresh_comments.extend(file_comments)
         if cache is not None and f.path not in errored_paths:
-            cache.set(keys[f.path], file_comments)
+            cache.set(keys[idx], file_comments)
     if cache is not None:
         cache.save()
 
-    comments = cached_comments + fresh_comments
+    # Overlapping chunks can report the same finding twice; collapse duplicates
+    # so a split file reads like a single review.
+    comments = dedupe_comments(cached_comments + fresh_comments)
     duration = time.perf_counter() - start
 
     result = ReviewResult(
-        files_reviewed=len(reviewable),
+        files_reviewed=logical_files,
+
         comments=comments,
         provider=provider.name,
         model=config.model,

@@ -37,7 +37,24 @@ from aicr.providers.base import LLMProvider, ProviderError
 from aicr.providers.gemini import DEFAULT_GEMINI_MODEL
 from aicr.providers.ollama import DEFAULT_OLLAMA_BASE_URL
 from aicr.providers.registry import build_provider
-from aicr.report import cli_renderer, json_renderer
+from aicr.report import cli_renderer, json_renderer, sarif_renderer
+
+# Output formats that must stay a clean pipe (no progress line, no estimate
+# prompt, no color) so their stdout is machine-parseable.
+_MACHINE_FORMATS = {"json", "sarif"}
+
+
+def _render_result(result: ReviewResult, output_format: str, *, use_color: bool,
+                   display_threshold: str) -> str:
+    """Render a ``ReviewResult`` in the requested output format."""
+    if output_format == "json":
+        return json_renderer.render(result)
+    if output_format == "sarif":
+        return sarif_renderer.render(result)
+    return cli_renderer.render(
+        result, use_color=use_color, display_threshold=display_threshold
+    )
+
 
 # Quick-reference shown on `aicr --help`. The leading `\b` tells click not to
 # rewrap this block, so the columns stay aligned.
@@ -126,9 +143,9 @@ def cli() -> None:
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(["cli", "json"]),
+    type=click.Choice(["cli", "json", "sarif"]),
     default="cli",
-    help="Output format.",
+    help="Output format (sarif = CI code-scanning).",
 )
 @click.option("--no-color", is_flag=True, help="Disable colored output.")
 @click.option(
@@ -195,14 +212,15 @@ def review(
         click.echo("Nothing to review.")
         raise SystemExit(0)
 
-    # A live status is pointless for JSON output (which must stay a clean pipe).
-    progress = _ProgressPrinter() if output_format != "json" else None
+    # A live status is pointless for machine output (which must stay a clean pipe).
+    progress = _ProgressPrinter() if output_format not in _MACHINE_FORMATS else None
     try:
         provider = build_provider(config)
         cache = ReviewCache(Path.cwd(), enabled=config.cache_enabled and not no_cache)
         result: ReviewResult = asyncio.run(
             run_review(provider, files, config, cache=cache, progress_callback=progress)
         )
+
     except ProviderError as exc:
         if progress is not None:
             progress.clear()
@@ -220,19 +238,18 @@ def review(
             progress.clear()
 
 
-    if output_format == "json":
-        click.echo(json_renderer.render(result))
-    else:
-        use_color = not no_color and sys.stdout.isatty()
-        click.echo(
-            cli_renderer.render(
-                result,
-                use_color=use_color,
-                display_threshold=config.severity_display_threshold,
-            )
+    use_color = not no_color and sys.stdout.isatty()
+    click.echo(
+        _render_result(
+            result,
+            output_format,
+            use_color=use_color,
+            display_threshold=config.severity_display_threshold,
         )
+    )
 
     _maybe_block(result, config, strict=strict)
+
     # Warn-only default: exit 0 (plan §3 step 7).
     raise SystemExit(0)
 
@@ -314,9 +331,9 @@ def _print_scan_estimate(
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(["cli", "json"]),
+    type=click.Choice(["cli", "json", "sarif"]),
     default="cli",
-    help="Output format.",
+    help="Output format (sarif = CI code-scanning).",
 )
 @click.option("--no-color", is_flag=True, help="Disable colored output.")
 @click.option(
@@ -330,7 +347,6 @@ def _print_scan_estimate(
 @click.option(
     "--max-files",
     "max_files",
-
     type=int,
     default=None,
     help="Cap how many files this scan reviews (overrides config for this run).",
@@ -400,9 +416,10 @@ def scan(
 
     # Confirmation gate with a *measured* time estimate: review one representative
     # file first (timed) and extrapolate. This is skipped for --yes (no prompt to
-    # inform) and --format json (must stay a clean pipe). The sample review is
+    # inform) and for machine output (must stay a clean pipe). The sample review is
     # served back from the cache on the full run below, so it isn't wasted.
-    if output_format != "json" and not assume_yes:
+    if output_format not in _MACHINE_FORMATS and not assume_yes:
+
         # Estimate tokens from the files actually being scanned (post-cap,
         # post-exclude), so the number matches the "N file(s)" beside it.
         est_tokens = estimate_scan_tokens(files)
@@ -422,7 +439,7 @@ def scan(
             raise SystemExit(0)
 
 
-    progress = _ProgressPrinter() if output_format != "json" else None
+    progress = _ProgressPrinter() if output_format not in _MACHINE_FORMATS else None
     try:
         result = asyncio.run(
             run_review(provider, files, config, cache=cache, progress_callback=progress)
@@ -444,18 +461,17 @@ def scan(
         if progress is not None:
             progress.clear()
 
-    if output_format == "json":
-        click.echo(json_renderer.render(result))
-    else:
-        use_color = not no_color and sys.stdout.isatty()
-        click.echo(
-            cli_renderer.render(
-                result,
-                use_color=use_color,
-                display_threshold=config.severity_display_threshold,
-            )
+    use_color = not no_color and sys.stdout.isatty()
+    click.echo(
+        _render_result(
+            result,
+            output_format,
+            use_color=use_color,
+            display_threshold=config.severity_display_threshold,
         )
+    )
     raise SystemExit(0)
+
 
 
 
@@ -954,7 +970,9 @@ def _write_config(config_path: Path, *, provider: str, settings: dict[str, objec
              "empty = auto-detect per file by extension"),
         f"exclude_paths: {_yaml_list(exclude)}",
         line("max_diff_lines_per_file", max_lines is not None, str(max_lines or 800),
-             "skip files with more added lines than this"),
+             "cap added lines per file before chunking kicks in"),
+        line("chunk_large_files", False, "true",
+             "split oversized files into chunks instead of skipping them"),
         line("max_files_per_review", max_files is not None, str(max_files or 50),
              "cap files reviewed per run"),
         line("concurrency", concurrency is not None, str(concurrency or 5),

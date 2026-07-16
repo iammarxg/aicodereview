@@ -19,11 +19,19 @@ All times are UTC.
 ---
 
 ## B1 — `aicr scan`: full-repository review (not just the diff)
-- **Status:** in-progress (core + measured estimate shipped; chunking still open)
+- **Status:** done (scan + measured estimate + large-file chunking all shipped)
 - **Suggested (UTC):** 2026-07-14T20:20Z
 - **Suggested at:** v0.3.0 (commit ca2c95a)
 - **Target version:** next release (Unreleased)
+- **Updated (UTC):** 2026-07-16T07:30Z — large-file **chunking** shipped, closing
+  the last open item. Files over `max_diff_lines_per_file` are split into
+  overlapping windows (real line numbers preserved) and reviewed per-chunk instead
+  of being skipped; `dedupe_comments` collapses duplicate findings from the overlap,
+  and the file still counts once in the summary. New `diff/chunk.py`, gated by
+  `chunk_large_files` (default true). This resolves the "large-file chunking" open
+  question below (chose split + dedupe over hard truncate, as leaned).
 - **Updated (UTC):** 2026-07-15T22:05Z — `aicr scan` shipped: full-content
+
   `DiffFile` synthesis (`scan.py`), shared discovery via `analyze.reviewable_files`,
   cost/time estimate + confirmation, `--max-files`, `--yes`, `--format json`.
 - **Updated (UTC):** 2026-07-15T22:50Z — fixed the estimate + recommendations that
@@ -111,10 +119,15 @@ without both.
 ---
 
 ## B3 — SARIF output format
-- **Status:** idea
+- **Status:** done — shipped in Unreleased. See CHANGELOG.
 - **Suggested (UTC):** 2026-07-14T20:20Z
 - **Suggested at:** v0.3.0 (commit ca2c95a)
-- **Target version:** TBA
+- **Target version:** next release (Unreleased)
+- **Updated (UTC):** 2026-07-16T07:30Z — shipped as designed: `report/sarif_renderer.py`
+  emits SARIF 2.1.0 (one rule per category, severity→level critical/warning/info →
+  error/warning/note), wired as `--format sarif` on `review` and `scan`. Tests cover
+  shape + mapping.
+
 
 ### Problem
 CI systems and code-scanning dashboards (e.g. GitHub code scanning) ingest SARIF.

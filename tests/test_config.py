@@ -30,7 +30,17 @@ def test_missing_key_ok_when_not_required(tmp_path: Path, monkeypatch) -> None:
     assert config.api_key is None
 
 
+def test_chunk_large_files_defaults_true_and_parses(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    # Default is on.
+    assert load_config(cwd=tmp_path, load_env=False).chunk_large_files is True
+    # And it round-trips from YAML.
+    (tmp_path / ".aicr.yaml").write_text("chunk_large_files: false\n", encoding="utf-8")
+    assert load_config(cwd=tmp_path, load_env=False).chunk_large_files is False
+
+
 def test_gemini_reads_its_own_env_var(tmp_path: Path, monkeypatch) -> None:
+
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "gm-secret")
     (tmp_path / ".aicr.yaml").write_text("provider: gemini\n", encoding="utf-8")

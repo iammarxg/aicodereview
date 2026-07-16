@@ -61,9 +61,13 @@ async def test_too_large_file_skipped() -> None:
             ],
         }
     )
-    result = await run_review(FakeProvider(), [big], _config(max_diff_lines_per_file=5))
+    # Chunking is on by default; disable it here to exercise the skip path.
+    result = await run_review(
+        FakeProvider(), [big], _config(max_diff_lines_per_file=5, chunk_large_files=False)
+    )
     assert result.skipped_too_large == 1
     assert result.files_reviewed == 0
+
 
 
 async def test_provider_error_isolated_to_file(multi_file_diff: str) -> None:
