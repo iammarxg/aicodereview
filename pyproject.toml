@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # NOTE: `ai-code-review` on PyPI is an unrelated project — do NOT use it.
 # This distribution is named `aicr-review`; the installed command is `aicr`.
 name = "aicr-review"
-version = "0.4.2"
+version = "0.5.0"
 
 description = "Local-first AI code review assistant that reviews your staged git diff before you commit."
 readme = "README.md"

@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-17
+
 ### Added
 - **SARIF output (`--format sarif`).** `aicr review` and `aicr scan` can now emit
   SARIF 2.1.0, the format GitHub code scanning and other CI dashboards ingest to
@@ -208,5 +210,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [0.3.0]: https://github.com/iammarxg/aicodereview/releases/tag/v0.3.0
 [0.4.0]: https://github.com/iammarxg/aicodereview/releases/tag/v0.4.0
 [0.4.1]: https://github.com/iammarxg/aicodereview/releases/tag/v0.4.1
-[Unreleased]: https://github.com/iammarxg/aicodereview/compare/v0.4.2...HEAD
 [0.4.2]: https://github.com/iammarxg/aicodereview/releases/tag/v0.4.2
+[Unreleased]: https://github.com/iammarxg/aicodereview/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/iammarxg/aicodereview/releases/tag/v0.5.0
